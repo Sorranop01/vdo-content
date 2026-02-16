@@ -1,0 +1,66 @@
+{
+    "realistic": {
+        "name": "Realistic",
+        "description": "สมจริง เหมือนถ่ายจริง",
+        "prompt_suffix": "photorealistic, natural lighting, high quality 4K video, professional videography",
+        "camera_defaults": [
+            "medium shot",
+            "tracking shot",
+            "static shot"
+        ],
+        "lighting": "natural daylight"
+    },
+    "cinematic": {
+        "name": "Cinematic",
+        "description": "สไตล์หนัง dramatic",
+        "prompt_suffix": "cinematic lighting, professional color grading, film look, 4K quality, dramatic shadows",
+        "camera_defaults": [
+            "slow zoom",
+            "dolly shot",
+            "low angle"
+        ],
+        "lighting": "dramatic, high contrast"
+    },
+    "animated": {
+        "name": "Animated",
+        "description": "การ์ตูน/แอนิเมชัน",
+        "prompt_suffix": "animated style, colorful, smooth animation, vibrant colors, cartoon aesthetic",
+        "camera_defaults": [
+            "medium shot",
+            "wide shot"
+        ],
+        "lighting": "bright, even lighting"
+    },
+    "documentary": {
+        "name": "Documentary",
+        "description": "สารคดี ให้ความรู้",
+        "prompt_suffix": "documentary style, informative, professional videography, authentic feel",
+        "camera_defaults": [
+            "handheld",
+            "interview style",
+            "b-roll"
+        ],
+        "lighting": "natural, authentic"
+    },
+    "minimalist": {
+        "name": "Minimalist",
+        "description": "เรียบง่าย สะอาด",
+        "prompt_suffix": "minimalist, clean background, simple composition, modern aesthetic",
+        "camera_defaults": [
+            "static shot",
+            "center frame"
+        ],
+        "lighting": "soft, diffused"
+    },
+    "energetic": {
+        "name": "Energetic",
+        "description": "กระฉับกระเฉง มีชีวิตชีวา",
+        "prompt_suffix": "dynamic, energetic movement, vibrant colors, fast-paced feel, high energy",
+        "camera_defaults": [
+            "tracking shot",
+            "quick cuts",
+            "action angle"
+        ],
+        "lighting": "bright, punchy"
+    }
+}

@@ -1,0 +1,45 @@
+# Version control
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Environment & credentials
+.env
+.env.local
+credentials.json
+service-account*.json
+*-credentials.json
+
+# Data (persisted via Docker volume)
+data/
+*.db
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs & reports
+*.md
+docs/
+agent-report/
+
+# Tests
+src/tests/
+
+# AI/Agent config
+.ai/
+.gemini/

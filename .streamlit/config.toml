@@ -1,0 +1,32 @@
+[server]
+# Network configuration for LAN access
+address = "0.0.0.0"
+port = 8502
+headless = true
+runOnSave = false
+baseUrlPath = ""
+enableCORS = false
+enableXsrfProtection = false
+maxUploadSize = 200
+maxMessageSize = 200
+enableWebsocketCompression = false
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+fastReruns = false
+magicEnabled = true
+enforceSerializableSessionState = false
+
+[client]
+toolbarMode = "auto"
+showErrorDetails = true
+showSidebarNavigation = true
+
+[theme]
+base = "dark"
+
+[logger]
+level = "info"
+messageFormat = "%(asctime)s - %(levelname)s - %(message)s"

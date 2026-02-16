@@ -1,0 +1,99 @@
+services:
+  # Streamlit UI
+  vdo-content:
+    build: .
+    container_name: vdo-content-app
+    ports:
+      - "8510:8510"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - GOOGLE_TTS_API_KEY=${GOOGLE_TTS_API_KEY}
+      - STREAMLIT_THEME_BASE=dark
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/vdo_content.db}
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_SERVER_ENABLE_CORS=false
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_PORT=8510
+    volumes:
+      # Persist project data
+      - vdo-data:/app/data
+    restart: unless-stopped
+    depends_on:
+      - vdo-api
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8510/_stcore/health" ]
+      interval: 60s
+      timeout: 15s
+      retries: 5
+      start_period: 30s
+
+  # FastAPI Backend
+  vdo-api:
+    build: .
+    container_name: vdo-content-api
+    command: uvicorn src.backend.api.main:app --host 0.0.0.0 --port 8000 --workers 2
+    ports:
+      - "8000:8000"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - GOOGLE_TTS_API_KEY=${GOOGLE_TTS_API_KEY}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/vdo_content.db}
+    volumes:
+      - vdo-data:/app/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # PostgreSQL (optional — uncomment to use instead of SQLite)
+  # To use: set DATABASE_URL=postgresql://vdo_user:vdo_password@postgres:5432/vdo_content
+  postgres:
+    image: postgres:16-alpine
+    container_name: vdo-content-db
+    environment:
+      POSTGRES_DB: vdo_content
+      POSTGRES_USER: vdo_user
+      POSTGRES_PASSWORD: vdo_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U vdo_user -d vdo_content" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    profiles:
+      - postgres # Only starts with: docker compose --profile postgres up
+
+volumes:
+  vdo-data:
+    driver: local
+  pgdata:
+    driver: local

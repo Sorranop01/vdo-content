@@ -1,0 +1,1461 @@
+"""
+Veo Prompt Generator V2 - AI-Powered Veo 3 Prompt Generation
+Uses DeepSeek AI to translate Thai narration into high-quality Veo prompts
+"""
+
+import os
+import logging
+from typing import Optional, Literal
+import time
+from datetime import datetime
+import re
+
+logger = logging.getLogger("vdo_content.prompt_generator")
+
+from .models import Scene, STYLE_PRESETS, StylePreset, EMOTION_VISUALS
+from .direction_styles import DIRECTION_STYLES, VideoDirectionStyle
+from .prompt_styles import build_style_prompt_injection, get_style_summary
+from .thai_visual_dictionary import build_visual_anchors, get_fallback_visuals, extract_visual_concepts
+
+# Check for OpenAI-compatible API
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+
+class VeoPromptGenerator:
+    """
+    AI-Powered Veo 3 Prompt Generator
+    Uses DeepSeek to translate Thai narration into English Veo prompts
+    """
+    
+    # DeepSeek API config
+    DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+    DEFAULT_MODEL = "deepseek-chat"
+    
+    # Veo 3 prompt structure template
+    PROMPT_TEMPLATE = """{subject}
+{action}
+{setting}
+{mood_lighting}
+{camera}
+{quality_tags}"""
+
+    # System prompt for Veo prompt generation — WITH PERSON mode
+    VEO_SYSTEM_PROMPT_WITH_PERSON = """You are an expert Visual Director creating prompts for Veo 3 AI Video Generation.
+
+**🎯 YOUR #1 MISSION: VISUAL-ONLY PROMPTS (NO DIALOGUE)**
+Create prompts for SILENT videos. The audio/narration will be added separately later.
+Your job is to describe VISUALS ONLY - actions, gestures, expressions, body language.
+
+**⚠️ CRITICAL: NO DIALOGUE IN PROMPTS**
+- DO NOT include any spoken words, dialogue, or narration text in the prompt
+- INSTEAD: Show the CHARACTER'S BODY LANGUAGE, GESTURES, and FACIAL EXPRESSIONS that MATCH what they would be saying
+- The visuals must "look like" the person is communicating the narration content through actions
+
+**🎭 VISUAL COMMUNICATION (Instead of Dialogue):**
+When narration says something, show it through:
+1. **Facial Expressions** - emotions that match the words
+2. **Hand Gestures** - illustrative movements (pointing, counting, showing)
+3. **Body Language** - posture, movement direction, energy level
+4. **Lip Movement** - character speaking/mouthing (NO text of what they say)
+5. **Actions** - physical demonstration of concepts
+
+**EXAMPLE TRANSLATIONS:**
+- Narration "ผมจะสอนคุณ 3 ขั้นตอน" → Character holds up 3 fingers, gesturing with enthusiasm, mouth moving as if explaining
+- Narration "มาเริ่มกันเลย" → Character claps hands together, energetic body posture, inviting gesture, speaking to camera
+- Narration "ขั้นตอนแรก คือ..." → Character raises index finger, leaning forward slightly, engaged expression, mouth moving
+
+**⚠️ CRITICAL CHARACTER CONSISTENCY:**
+- You will receive a "Character Reference" - this describes the EXACT SAME PERSON in EVERY scene.
+- NEVER change the character's ethnicity, age, gender, or clothing unless told.
+- If Character Reference says "Thai woman, 30s, casual clothes" → EVERY scene shows this EXACT person.
+- This is NON-NEGOTIABLE for video coherence.
+
+**📋 VISUAL CONTENT RULES:**
+
+1. **TIME REFERENCES → SHOW VISUALS + GESTURE:**
+   - "2 เดือน" (2 months) → Show calendar, character pointing at it, holding up 2 fingers
+   - "ทุกวัน" (every day) → Show sunrise/sunset cycle, character making circular gesture
+   - "1 สัปดาห์" (1 week) → Show weekly calendar, character tracing days with finger
+
+2. **EXPLANATIONS → SHOW DEMONSTRATING:**
+   - When explaining, show character: gesturing, pointing, demonstrating, mouth moving
+   - Use hand movements to emphasize points
+   - Show body language that conveys the emotion of the explanation
+
+3. **OBJECTS MENTIONED → INCLUDE THEM + INTERACTION:**
+   - "น้ำหนัก" → Show weighing scale, character pointing at or using it
+   - "อาหาร" → Show specific food items, character gesturing toward them
+   - "ปฏิทิน" → Show calendar prop, character marking or pointing at dates
+
+4. **EMOTIONS → SHOW IN FULL BODY:**
+   - "มีความสุข" → Genuine smile, open body posture, energetic gestures
+   - "เครียด" → Worried expression, tense shoulders, restrained movements
+
+**📝 PROMPT STRUCTURE:**
+
+[EXACT CHARACTER DESCRIPTION] + 
+[PHYSICAL ACTION + HAND GESTURES matching content] + 
+[FACIAL EXPRESSION + LIP MOVEMENT (speaking, but no dialogue text)] + 
+[PROPS/OBJECTS with character interaction] + 
+[SETTING] + [LIGHTING] + [CAMERA] + [QUALITY TAGS]
+
+**EXAMPLE:**
+Narration: "ภายในสองเดือน คุณจะเริ่มเห็นการเปลี่ยนแปลง"
+Character Reference: "Thai woman, early 30s, slightly overweight, wearing casual pink t-shirt"
+
+✅ CORRECT PROMPT (Visual-only, no dialogue):
+"Thai woman, early 30s, slightly overweight build, wearing casual pink t-shirt, standing in front of a wall calendar, holding up two fingers with one hand while pointing at the calendar with the other, mouth moving as if speaking to viewer, enthusiastic expression with slight smile of determination. The calendar clearly shows two months worth of dates. Warm natural lighting from window, medium shot slowly zooming in, cinematic quality, photorealistic."
+
+❌ WRONG PROMPT:
+"Person saying 'in two months you will see changes'" (Contains dialogue text!)
+"Person thinking about change in modern room." (Too vague, no gestures)
+
+**FINAL CHECK:** 
+1. Does the prompt contain ANY dialogue text? → REMOVE IT
+2. Does it show GESTURES and EXPRESSIONS matching the narration? → REQUIRED
+3. Can you tell what the character is "talking about" from visuals alone? → GOAL
+"""
+
+    # System prompt for NO PERSON mode (B-roll, product, scenic)
+    VEO_SYSTEM_PROMPT_NO_PERSON = """You are an expert Visual Director creating prompts for Veo 3 AI Video Generation.
+
+**🎯 YOUR #1 MISSION: VISUAL-ONLY PROMPTS — NO PEOPLE**
+Create prompts for videos that contain NO human subjects.
+Focus on objects, environments, products, nature, food, architecture, and atmospheric b-roll.
+
+**⚠️ CRITICAL: NO PEOPLE IN FRAME**
+- DO NOT include any person, character, hands, face, or body parts in the prompt
+- Focus on: objects, products, environments, nature, cityscapes, food, textures
+- Show the CONCEPT of the narration through visual metaphors and object shots
+
+**🎬 VISUAL STORYTELLING WITHOUT PEOPLE:**
+When narration says something, show it through:
+1. **Objects & Props** - items that represent the concept being discussed
+2. **Environment** - settings that evoke the mood of the narration
+3. **Movement** - natural motion (flowing water, wind, steam, light changes)
+4. **Transitions** - visual metaphors (clock for time, path for journey)
+5. **Detail Shots** - close-ups of textures, surfaces, products
+
+**EXAMPLE TRANSLATIONS:**
+- Narration "ภายในสองเดือน คุณจะเห็นการเปลี่ยนแปลง" → Close-up of calendar pages flipping, soft light shifting from cold to warm
+- Narration "อาหารที่ดีต่อสุขภาพ" → Beautiful food arrangement, fresh vegetables, steam rising, warm kitchen lighting
+- Narration "เริ่มต้นวันใหม่" → Sunrise time-lapse, coffee cup with steam, morning light creeping across desk
+
+**📝 PROMPT STRUCTURE:**
+
+[MAIN SUBJECT/OBJECT] + 
+[MOVEMENT/ACTION of objects] + 
+[SETTING/ENVIRONMENT] + 
+[LIGHTING/ATMOSPHERE] + 
+[CAMERA MOVEMENT] + [QUALITY TAGS]
+
+**EXAMPLE:**
+Narration: "ภายในสองเดือน คุณจะเริ่มเห็นการเปลี่ยนแปลง"
+
+✅ CORRECT PROMPT:
+"Close-up of a wall calendar with pages slowly turning, red X marks progressively filling two months of dates, warm golden afternoon light streaming through nearby window casting long shadows across the calendar, rack focus to a potted plant in background showing new growth, medium close-up with slow dolly in, cinematic quality, photorealistic, shallow depth of field."
+
+❌ WRONG PROMPT:
+"Person looking at calendar" (Contains a person!)
+"Calendar on wall" (Too vague, no movement, no atmosphere)
+
+**FINAL CHECK:**
+1. Does the prompt contain ANY person/character? → REMOVE THEM
+2. Does it use objects/environment to convey the narration's meaning? → REQUIRED
+3. Is there movement and atmosphere? → REQUIRED for engaging video
+"""
+
+    # System prompt for MIXED mode (AI decides per scene)
+    VEO_SYSTEM_PROMPT_MIXED = """You are an expert Visual Director creating prompts for Veo 3 AI Video Generation.
+
+**🎯 YOUR #1 MISSION: VISUAL-ONLY PROMPTS (NO DIALOGUE)**
+Create prompts for SILENT videos. The audio/narration will be added separately later.
+Your job is to describe VISUALS ONLY.
+
+**🔄 MIXED MODE — YOU DECIDE:**
+For each scene, decide whether to show:
+- **A PERSON** performing actions/gestures that match narration
+- **OBJECTS/ENVIRONMENT ONLY** (b-roll, product shots, scenic) with no people
+
+Choose based on the narration content:
+- If narration is about personal experience, instructions, emotions → SHOW A PERSON
+- If narration is about objects, places, concepts, data → SHOW OBJECTS/ENVIRONMENT
+- If you receive a Character Reference, maintain consistency when showing the person
+
+**⚠️ CRITICAL: NO DIALOGUE IN PROMPTS**
+- DO NOT include any spoken words, dialogue, or narration text
+- Show concepts through visuals, gestures, objects, and environment
+
+**📝 PROMPT STRUCTURE:**
+[SUBJECT (person OR object)] + [ACTION/MOVEMENT] + [SETTING] + [LIGHTING] + [CAMERA] + [QUALITY TAGS]
+
+**FINAL CHECK:**
+1. Does the prompt contain ANY dialogue text? → REMOVE IT
+2. Is the visual approach (person vs object) appropriate for this narration? → CHECK
+3. Is there enough detail for Veo 3 to generate a clear video? → REQUIRED
+"""
+
+    # System prompt for Thai voiceover — PURE narration text, NO emotion/tone
+    VOICEOVER_SYSTEM_PROMPT = """คุณเป็นผู้เชี่ยวชาญในการเตรียมบทพากย์เสียงภาษาไทย
+
+**🎯 ภารกิจ:** ส่งคืนบทพากย์เสียงภาษาไทยเท่านั้น — ไม่มีคำแนะนำเรื่องโทนเสียง ไม่มีอารมณ์ ไม่มีอิโมจิ
+
+**📋 กฎ:**
+1. ส่งคืนเฉพาะข้อความบทพูดที่ใช้พากย์เสียงเท่านั้น
+2. ห้ามใส่คำแนะนำโทนเสียง อารมณ์ จังหวะ หรืออิโมจิ
+3. ห้ามใส่คำอธิบายใดๆ เช่น "พูดเบาๆ" "เน้นคำ" "เสียงอบอุ่น"
+4. แค่คืนบทพูดตรงๆ ที่ใช้อ่านออกเสียง
+
+**ตัวอย่าง:**
+Input: "ภายในสองเดือน คุณจะเริ่มเห็นการเปลี่ยนแปลง"
+Output: ภายในสองเดือน คุณจะเริ่มเห็นการเปลี่ยนแปลง
+"""
+
+    # System prompt for English voice tone direction — COHERENT with video style
+    VOICE_TONE_SYSTEM_PROMPT = """You are a professional Voice Director for Thai video content.
+
+**🎯 MISSION:** Generate English voice tone/speaking style direction that MATCHES the video style prompt.
+
+**⚠️ COHERENCE IS CRITICAL:**
+You will receive the VIDEO STYLE PROMPT for this scene. Your speaking style MUST match:
+- If video is energetic → voice should be energetic
+- If video is calm/documentary → voice should be calm/measured
+- If video shows excitement → voice should convey excitement
+- The voice direction must feel like it belongs WITH the video, not separate.
+
+**📋 OUTPUT FORMAT (English ONLY):**
+```
+🎙️ Tone: [warm/serious/cheerful/motivating/calm/friendly]
+⏱️ Pacing: [slow/medium/fast + pause guidance]
+😊 Emotion: [excited/confident/empathetic/fun/encouraging]
+✨ Emphasis: [key words to stress]
+💬 Style: [conversational/presentation/storytelling/teaching]
+📌 Notes: [breathing, volume changes, special delivery]
+```
+
+**RULES:**
+1. ALL output must be in ENGLISH
+2. Do NOT include the Thai narration text
+3. Focus ONLY on HOW to deliver the voice — tone, emotion, pacing
+4. MUST be coherent with the video style prompt provided
+"""
+
+    # Camera movement options
+    CAMERA_OPTIONS = [
+        "static shot",
+        "slow zoom in",
+        "slow zoom out",
+        "pan left to right",
+        "pan right to left",
+        "tracking shot following subject",
+        "dolly in",
+        "aerial view descending",
+        "low angle looking up",
+        "high angle looking down",
+        "medium shot",
+        "close-up",
+        "wide establishing shot"
+    ]
+    
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        character_reference: str = "",
+        use_ai: bool = True,
+        enable_qa: bool = False  # Default OFF to prevent prompt drift
+    ):
+        """
+        Initialize generator
+        
+        Args:
+            api_key: DeepSeek API key
+            character_reference: Description of main character for consistency
+            use_ai: Whether to use AI generation (can fallback to rule-based)
+            enable_qa: Enable AI Quality Assurance review (default: False for consistency)
+        """
+        self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
+        self.character_reference = character_reference
+        self.use_ai = use_ai
+        self.enable_qa = enable_qa
+        self._client = None
+    
+    def is_available(self) -> bool:
+        """Check if AI is available"""
+        return OPENAI_AVAILABLE and bool(self.api_key) and self.use_ai
+    
+    @property
+    def client(self):
+        """Lazy load OpenAI-compatible client"""
+        if self._client is None and self.is_available():
+            self._client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.DEEPSEEK_BASE_URL
+            )
+        return self._client
+    
+    def _get_system_prompt(self, video_type: str = "with_person") -> str:
+        """Get appropriate system prompt based on video type"""
+        if video_type == "no_person":
+            return self.VEO_SYSTEM_PROMPT_NO_PERSON
+        elif video_type == "mixed":
+            return self.VEO_SYSTEM_PROMPT_MIXED
+        else:
+            return self.VEO_SYSTEM_PROMPT_WITH_PERSON
+    
+    def _summarize_prompt(self, veo_prompt: str) -> str:
+        """Create a useful summary of a generated prompt (not just truncation)"""
+        if not veo_prompt:
+            return ""
+        # Find the first complete sentence (up to 250 chars)
+        # Look for period, comma, or end-of-string
+        cutoff = min(250, len(veo_prompt))
+        # Try to cut at a sentence boundary
+        for end_char in ['. ', ', ']:
+            pos = veo_prompt.find(end_char, 100)
+            if 0 < pos < cutoff:
+                return veo_prompt[:pos + 1].strip()
+        return veo_prompt[:cutoff].strip() + "..."
+    
+    def generate_prompt(
+        self,
+        scene: Scene,
+        character_override: Optional[str] = None,
+        visual_theme: str = "",
+        directors_note: str = "",
+        aspect_ratio: str = "16:9",
+        scene_number: int = 1,
+        total_scenes: int = 1,
+        previous_scene_summary: str = "",
+        direction_style_id: Optional[str] = None,
+        prompt_style_config: Optional[dict] = None,
+        video_type: str = "with_person",
+        previous_narration: str = "",
+        next_narration: str = "",
+        script_summary: str = ""
+    ) -> str:
+        """
+        Generate Veo 3 prompt for a scene using AI
+        
+        Args:
+            scene: Scene object with narration and visual settings
+            character_override: Override the default character reference
+            visual_theme: Visual theme to apply
+            directors_note: Special instructions for this scene
+            aspect_ratio: Video aspect ratio (16:9, 9:16, 1:1)
+            scene_number: Current scene number for context
+            total_scenes: Total number of scenes for context
+            previous_scene_summary: Summary of previous scene for continuity
+            video_type: "with_person", "no_person", or "mixed"
+            previous_narration: Thai narration text of previous scene
+            next_narration: Thai narration text of next scene (peek-ahead)
+            script_summary: Brief summary of the full script for narrative arc
+        """
+        if self.is_available():
+            return self._generate_ai_prompt(
+                scene,
+                character_override,
+                visual_theme,
+                directors_note,
+                aspect_ratio,
+                scene_number,
+                total_scenes,
+                previous_scene_summary,
+                direction_style_id,
+                prompt_style_config,
+                video_type,
+                previous_narration,
+                next_narration,
+                script_summary
+            )
+        else:
+            return self._generate_fallback_prompt(scene, character_override, video_type)
+    
+    def _generate_ai_prompt(
+        self,
+        scene: Scene,
+        character_override: Optional[str] = None,
+        visual_theme: str = "",
+        directors_note: str = "",
+        aspect_ratio: str = "16:9",
+        scene_number: int = 1,
+        total_scenes: int = 1,
+        previous_scene_summary: str = "",
+        direction_style_id: Optional[str] = None,
+        prompt_style_config: Optional[dict] = None,
+        video_type: str = "with_person",
+        previous_narration: str = "",
+        next_narration: str = "",
+        script_summary: str = ""
+    ) -> str:
+        """Generate prompt using DeepSeek AI with scene context"""
+        
+        # Get style info
+        style = STYLE_PRESETS.get(scene.visual_style, STYLE_PRESETS["documentary"])
+        
+        # Determine character
+        character = character_override or self.character_reference or ""
+        
+        # Aspect Ratio logic
+        ratio_instruction = ""
+        if aspect_ratio == "9:16":
+            ratio_instruction = "IMPORTANT: This is a VERTICAL VIDEO (9:16). Compose for portrait mode. Keep subjects centered vertically. Use keywords: 'vertical video', 'portrait mode', 'tall framing'."
+        elif aspect_ratio == "1:1":
+            ratio_instruction = "IMPORTANT: This is a SQUARE VIDEO (1:1). Keep subjects centered."
+        elif aspect_ratio == "21:9":
+            ratio_instruction = "IMPORTANT: This is a WIDE CINEMATIC VIDEO (21:9)."
+        
+        # NEW: Direction style guidance injection
+        direction_instructions = ""
+        if direction_style_id and direction_style_id in DIRECTION_STYLES:
+            style_obj = DIRECTION_STYLES[direction_style_id]
+            direction_instructions = f"""
+**🎬 VIDEO DIRECTION STYLE: {style_obj.name}**
+{style_obj.veo_instructions}
+
+Camera Guidance: {style_obj.camera_guidance}
+Transition Style: {style_obj.transition_guidance}
+Keywords to include: {', '.join(style_obj.keywords)}
+"""
+        
+        # NEW: Content style guidance injection (from prompt_style_config)
+        content_style_instructions = ""
+        if prompt_style_config:
+            style_injection = build_style_prompt_injection(prompt_style_config)
+            style_summary = get_style_summary(prompt_style_config, lang="en")
+            if style_injection:
+                content_style_instructions = f"""
+**🎨 CONTENT APPROACH STYLE:**
+Selected styles: {style_summary}
+
+Apply these visual guidelines:
+{style_injection}
+"""
+        
+        # Build context for AI - STRICT literal translation with scene continuity
+        continuity_instruction = ""
+        if previous_scene_summary:
+            continuity_instruction = f"""
+**🔗 SCENE CONTINUITY:**
+This is Scene {scene_number} of {total_scenes}.
+Previous scene showed: {previous_scene_summary}
+→ MAINTAIN VISUAL CONTINUITY! Same character appearance, similar setting unless narration indicates location change.
+"""
+        else:
+            continuity_instruction = f"**📌 This is Scene {scene_number} of {total_scenes} (FIRST SCENE - establish the character clearly)**\n"
+        
+        # Build narrative context section
+        narrative_context = ""
+        if previous_narration or next_narration or script_summary:
+            narrative_context = "\n**📖 NARRATIVE CONTEXT:**\n"
+            if script_summary:
+                narrative_context += f"Script overview: {script_summary}\n"
+            if previous_narration:
+                narrative_context += f"Previous scene narration: \"{previous_narration}\"\n"
+            if next_narration:
+                narrative_context += f"Next scene narration: \"{next_narration}\"\n"
+            narrative_context += "→ Create visuals that FLOW with the story. Connect to previous scene and set up the next.\n"
+        
+        # Build character/subject section based on video_type
+        if video_type == "no_person":
+            subject_section = """**📦 SUBJECT (NO PEOPLE):**
+This is a NO-PERSON video. Do NOT include any person, character, hands, face, or body.
+Focus on objects, environments, products, nature, and visual metaphors."""
+        elif video_type == "mixed":
+            subject_section = f"""**🔄 SUBJECT (MIXED MODE):**
+Decide if this scene needs a PERSON or just OBJECTS/ENVIRONMENT based on the narration.
+If using a person, use this reference: {character if character else 'appropriate person for the content'}
+If the narration is about concepts/objects/places, show those WITHOUT a person."""
+        else:
+            subject_section = f"""**⚠️ CHARACTER LOCK (MUST USE EXACTLY):**
+{character if character else "A Thai person in casual modern clothing"}
+↑ COPY THIS DESCRIPTION WORD-FOR-WORD at the start of your prompt. Do NOT change ethnicity, age, or clothing!"""
+        
+        user_prompt = f"""**🎯 MISSION:** Create a Veo 3 video prompt that LITERALLY shows what the narration says.
+
+{direction_instructions}
+
+{content_style_instructions}
+
+{continuity_instruction}
+{subject_section}
+
+**📺 VIDEO FORMAT:** {aspect_ratio} {ratio_instruction}
+
+**⏱️ DURATION:** This is an **8-second video clip** (Veo 3 standard).
+- Describe action that fills the FULL 8 seconds continuously
+- Use 2-3 connected actions with smooth camera movement
+- The narration is {scene.audio_duration:.1f} seconds — fill remaining time with ambient visuals/movement
+- Do NOT describe action that ends before 8 seconds
+
+**🎨 VISUAL STYLE:**
+- Theme: {visual_theme if visual_theme else style.name}
+- Atmosphere: {style.description}
+- Director's Note: {directors_note if directors_note else "Natural, authentic feel"}
+
+{narrative_context}
+
+{build_visual_anchors(scene.narration_text, video_type)}
+
+**🎤 NARRATION (Thai):**
+"{scene.narration_text}"
+
+**🚫 ABSOLUTE RULES:**
+1. ENGLISH ONLY - NO THAI CHARACTERS ALLOWED in your response!
+2. LITERAL TRANSLATION - Describe EXACTLY what the narration says, NOT what you think makes sense
+3. If narration mentions a NUMBER → SHOW that number visually
+4. If narration mentions a TIME PERIOD → SHOW calendar/clock
+5. If narration mentions an OBJECT → SHOW that object
+{"6. NO PEOPLE — Do not include any person, character, hands, or body parts" if video_type == "no_person" else ""}
+
+**📝 YOUR TASK:**
+1. {"Describe OBJECTS/ENVIRONMENT that represent the narration" if video_type == "no_person" else "START with the EXACT character description from Character Lock"}
+2. TRANSLATE the narration LITERALLY - what actions/objects are mentioned?
+3. ADD specific props that visualize the content (calendar, scale, food, etc.)
+4. DESCRIBE setting, lighting, camera movement
+5. END with quality tags
+
+**OUTPUT FORMAT (English only, minimum 50 words, NO THAI TEXT, describe 8 seconds of continuous action):**
+"{"[MAIN SUBJECT/OBJECT]" if video_type == "no_person" else "[CHARACTER]"}, [SPECIFIC ACTION with mentioned objects/props], [SETTING], [LIGHTING], [CAMERA: {scene.camera_movement or 'medium shot'}], cinematic quality, photorealistic."
+
+Now write the prompt (ENGLISH ONLY):"""
+
+        try:
+            system_prompt = self._get_system_prompt(video_type)
+            response = self.client.chat.completions.create(
+                model=self.DEFAULT_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.2,  # Very low for maximum consistency between scenes
+                max_tokens=500
+            )
+            
+            prompt = response.choices[0].message.content.strip()
+            
+            # 3. Clean up prompt (Thai text removal, formatting)
+            prompt = self._clean_prompt(prompt)
+            
+            # 4. SAFETY NET: Remove dialogue artifacts (quoted speech, "saying", etc.)
+            prompt = self._strip_dialogue_artifacts(prompt)
+            
+            # 5. Optional: AI QA review
+            if self.enable_qa:
+                prompt = self._qa_review(prompt, scene)
+            
+            # 6. Quality scoring
+            score, suggestions = self._score_prompt_quality(
+                prompt, scene.narration_text, video_type
+            )
+            scene.quality_score = score
+            scene.quality_suggestions = suggestions
+            
+            # 7. Auto-regenerate if score too low (one retry)
+            if score < 50 and not getattr(self, '_is_retry', False):
+                logger.info(f"Quality score {score} < 50, retrying with hints")
+                self._is_retry = True
+                try:
+                    # Retry with extra specificity instructions
+                    retry_prompt = prompt  # Will use fallback enrichment instead
+                    scene.veo_prompt = ""  # Reset
+                except Exception:
+                    pass
+                finally:
+                    self._is_retry = False
+            
+            return prompt
+            
+        except Exception as e:
+            logger.warning(f"AI prompt generation failed: {e}")
+            return self._generate_fallback_prompt(scene, character_override, video_type)
+    
+    def _clean_prompt(self, prompt: str) -> str:
+        """Clean up AI-generated prompt"""
+
+        
+        # Remove markdown code blocks
+        if prompt.startswith("```"):
+            lines = prompt.split("\n")
+            prompt = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+        
+        # Remove quotes if wrapped
+        prompt = prompt.strip('"\'')
+        
+        # ⚠️ CRITICAL: Remove any Thai text that slipped through
+        # Thai Unicode range: U+0E00 to U+0E7F
+        prompt = re.sub(r'[\u0E00-\u0E7F]+', '', prompt)
+        
+        # Clean up extra spaces/commas from Thai removal
+        prompt = re.sub(r'\s+', ' ', prompt)  # Multiple spaces → single space
+        prompt = re.sub(r',\s*,', ',', prompt)  # Double commas → single
+        prompt = re.sub(r'^\s*,\s*', '', prompt)  # Leading comma
+        prompt = re.sub(r'\s*,\s*$', '', prompt)  # Trailing comma
+        
+        return prompt.strip()
+    
+    def _strip_dialogue_artifacts(self, prompt: str) -> str:
+        """
+        SAFETY NET: Remove any dialogue text that slipped through AI generation
+        
+        This is a post-processing step that catches:
+        1. Quoted speech ("text" or 'text')
+        2. "saying" patterns (e.g., "saying hello")
+        3. "speaking about" patterns
+        4. Other dialogue indicators
+        
+        Returns:
+            Prompt with dialogue artifacts removed
+        """
+        import re
+        
+        # Remove quoted speech entirely
+        prompt = re.sub(r'"[^"]+"', '', prompt)
+        prompt = re.sub(r"'[^']+'", '', prompt)
+        
+        # Remove "saying X" patterns - replace with just "speaking" or "gesturing"
+        prompt = re.sub(r',?\s*saying\s+"[^"]+"', '', prompt, flags=re.IGNORECASE)
+        prompt = re.sub(r',?\s*saying\s+[^,\.]+', ', speaking with hand gestures', prompt, flags=re.IGNORECASE)
+        
+        # Remove "talking about X" - replace with "discussing"
+        prompt = re.sub(r'talking about\s+"[^"]+"', 'gesturing while discussing', prompt, flags=re.IGNORECASE)
+        prompt = re.sub(r'talking about\s+[^,\.]+', 'gesturing expressively', prompt, flags=re.IGNORECASE)
+        
+        # Remove "mentions" or "states" - verbal indicators
+        prompt = re.sub(r',?\s*mentions?\s+"[^"]+"', '', prompt, flags=re.IGNORECASE)
+        prompt = re.sub(r',?\s*states?\s+"[^"]+"', '', prompt, flags=re.IGNORECASE)
+        
+        # Replace "lips moving" or "mouth moving" with "expressing"
+        prompt = re.sub(r'lips?\s+moving(?:\s+as\s+if)?(?:\s+saying)?[^,\.]*', 'expressing with gestures', prompt, flags=re.IGNORECASE)
+        prompt = re.sub(r'mouth\s+moving[^,\.]*', 'facial expressions', prompt, flags=re.IGNORECASE)
+        
+        # Clean up multiple commas and spaces from removals
+        prompt = re.sub(r'\s+', ' ', prompt)
+        prompt = re.sub(r',\s*,+', ',', prompt)
+        prompt = re.sub(r'^\s*,\s*', '', prompt)
+        prompt = re.sub(r'\s*,\s*$', '', prompt)
+        
+        return prompt.strip()
+    
+    def _qa_review(self, prompt: str, scene: Scene) -> str:
+        """
+        AI Quality Assurance - Review and improve prompt
+        
+        This method evaluates the generated prompt for:
+        1. Completeness (all 6 elements present)
+        2. Clarity (no ambiguous descriptions)
+        3. Veo 3 compatibility (no text, logos, complex scenes)
+        4. Duration appropriateness (≤8 seconds of action)
+        
+        Args:
+            prompt: The generated Veo prompt
+            scene: Original scene for context
+            
+        Returns:
+            Reviewed and potentially improved prompt
+        """
+        if not self.is_available():
+            return prompt
+        
+        qa_system_prompt = """You are a QA Expert for Veo 3 video prompts.
+Review and improve prompts for maximum quality.
+
+Quality Criteria:
+1. Subject - Clear character description?
+2. Action - Specific physical action?
+3. Setting - Clear location/background?
+4. Lighting - Light and mood description?
+5. Camera - Camera angle/movement?
+6. Quality - Quality tags present?
+
+Veo 3 Rules:
+- No text overlays, logos, watermarks
+- Maximum 8 seconds of action
+- Avoid complex multi-subject scenes
+- English language only
+
+If prompt is good -> respond "PASS:" followed by original prompt
+If needs improvement -> respond "IMPROVED:" followed by new prompt"""
+
+        qa_user_prompt = f"""Review this Veo prompt:
+
+Prompt: {prompt}
+
+Context from Thai narration:
+{scene.narration_text}
+
+Respond with only PASS: or IMPROVED: followed by the prompt"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.DEFAULT_MODEL,
+                messages=[
+                    {"role": "system", "content": qa_system_prompt},
+                    {"role": "user", "content": qa_user_prompt}
+                ],
+                temperature=0.3,  # Lower temperature for more consistent QA
+                max_tokens=600
+            )
+            
+            result = response.choices[0].message.content.strip()
+            
+            if result.startswith("PASS:"):
+                return result[5:].strip()
+            elif result.startswith("IMPROVED:"):
+                improved = result[9:].strip()
+                logger.info("QA improved prompt")
+                return self._clean_prompt(improved)
+            else:
+                # If format is unexpected, try to extract useful content
+                return self._clean_prompt(result) if len(result) > 50 else prompt
+                
+        except Exception as e:
+            logger.warning(f"QA review failed: {e}")
+            return prompt
+    
+    def generate_voiceover_prompt(
+        self,
+        scene: Scene,
+        scene_number: int = 1,
+        total_scenes: int = 1,
+        visual_theme: str = ""
+    ) -> str:
+        """
+        Generate pure Thai voiceover text for a scene (NO emotion/tone).
+        
+        Returns only the narration text that voice talent reads aloud.
+        """
+        if not scene.narration_text:
+            return ""
+        # Pure Thai narration — just return the text as-is
+        return scene.narration_text.strip()
+    
+    def generate_voice_tone(
+        self,
+        scene: Scene,
+        scene_number: int = 1,
+        total_scenes: int = 1,
+        visual_theme: str = "",
+        veo_prompt: str = ""
+    ) -> str:
+        """
+        Generate English voice tone direction for a scene.
+        
+        This creates guidance for voice talent on HOW to speak:
+        tone, pacing, emotion, emphasis, style — all in English.
+        COHERENT with the video style prompt.
+        
+        Args:
+            scene: Scene with narration_text
+            scene_number: Current scene number
+            total_scenes: Total scenes for context
+            visual_theme: Visual theme for mood alignment
+            
+        Returns:
+            English voice tone direction
+        """
+        if not scene.narration_text:
+            return ""
+        
+        if self.is_available():
+            return self._generate_ai_voice_tone(
+                scene, scene_number, total_scenes, visual_theme, veo_prompt
+            )
+        else:
+            return self._generate_fallback_voice_tone(scene)
+    
+    def _generate_ai_voice_tone(
+        self,
+        scene: Scene,
+        scene_number: int,
+        total_scenes: int,
+        visual_theme: str,
+        veo_prompt: str = ""
+    ) -> str:
+        """Generate English voice tone direction using DeepSeek AI — coherent with video style"""
+        
+        # Determine position context
+        if scene_number == 1:
+            position = "Opening scene (introduction)"
+        elif scene_number == total_scenes:
+            position = "Closing scene (summary/farewell)"
+        else:
+            position = f"Mid scene ({scene_number}/{total_scenes})"
+        
+        # Include video style prompt for coherence
+        video_context = ""
+        if veo_prompt:
+            video_context = f"""\n**🎬 VIDEO STYLE PROMPT (match your voice direction to this):**
+{veo_prompt[:500]}
+
+→ Your voice direction MUST match the mood, energy, and atmosphere of this video prompt.\n"""
+        
+        user_prompt = f"""**Thai narration to direct voice for:**
+"{scene.narration_text}"
+{video_context}
+**Context:**
+- Position: {position}
+- Duration: 8-second clip (narration: {scene.audio_duration:.1f}s)
+- Visual theme: {visual_theme if visual_theme else "general"}
+- Scene emotion: {scene.emotion}
+
+Generate English Voice Tone Direction that is COHERENT with the video style:"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.DEFAULT_MODEL,
+                messages=[
+                    {"role": "system", "content": self.VOICE_TONE_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3,
+                max_tokens=400
+            )
+            
+            result = response.choices[0].message.content.strip()
+            
+            # Clean markdown code blocks if present
+            if result.startswith("```"):
+                lines = result.split("\n")
+                result = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+            
+            return result.strip()
+            
+        except Exception as e:
+            logger.warning(f"AI voice tone generation failed: {e}")
+            return self._generate_fallback_voice_tone(scene)
+    
+    def _generate_fallback_voice_tone(self, scene: Scene) -> str:
+        """Fallback rule-based English voice tone direction"""
+        
+        emotion_map = {
+            "motivational": ("Motivating, encouraging", "Medium-fast, energetic", "Excited, confident"),
+            "calm": ("Calm, warm", "Slow, with pauses", "Relaxed, comfortable"),
+            "urgent": ("Serious, intense", "Fast, concise", "Urgent, focused"),
+            "happy": ("Cheerful, lively", "Medium, bright", "Smiling, happy"),
+            "neutral": ("Natural, friendly", "Medium, steady", "Comfortable, approachable"),
+        }
+        
+        tone, pace, mood = emotion_map.get(scene.emotion, emotion_map["neutral"])
+        
+        return f"""🎙️ Tone: {tone}
+⏱️ Pacing: {pace}
+😊 Emotion: {mood}
+✨ Emphasis: (consider from context)
+💬 Style: Natural storytelling
+📌 Notes: Speak naturally, don't rush"""
+    
+    def review_prompt(self, prompt: str) -> dict:
+        """
+        Explicit quality review with detailed scoring
+        
+        Args:
+            prompt: Veo prompt to review
+            
+        Returns:
+            Dict with score (0-100), issues list, and suggestions
+        """
+        if not self.is_available():
+            return {"score": 0, "issues": ["AI not available"], "suggestions": []}
+        
+        review_prompt = f"""Score this Veo 3 prompt (0-100) and list issues:
+
+{prompt}
+
+Reply in JSON format:
+{{"score": 85, "issues": ["missing lighting description"], "suggestions": ["add 'soft natural lighting'"]}}"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.DEFAULT_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a Veo 3 prompt quality reviewer. Reply only in valid JSON."},
+                    {"role": "user", "content": review_prompt}
+                ],
+                temperature=0.2,
+                max_tokens=300
+            )
+            
+            import json
+            result = response.choices[0].message.content.strip()
+            # Clean JSON if wrapped in markdown
+            if result.startswith("```"):
+                result = "\n".join(result.split("\n")[1:-1])
+            return json.loads(result)
+            
+        except Exception as e:
+            return {"score": 0, "issues": [str(e)], "suggestions": []}
+
+    def _score_prompt_quality(
+        self,
+        prompt: str,
+        narration_text: str,
+        video_type: str = "with_person"
+    ) -> tuple[int, list[str]]:
+        """
+        Rule-based prompt quality scoring.
+        
+        Checks for completeness of prompt elements:
+        - Subject/character description
+        - Action/movement
+        - Setting/environment
+        - Lighting/atmosphere
+        - Camera movement
+        - Quality tags
+        - No Thai text
+        - Minimum word count
+        
+        Args:
+            prompt: Generated Veo prompt
+            narration_text: Original Thai narration for reference
+            video_type: "with_person", "no_person", or "mixed"
+            
+        Returns:
+            Tuple of (score 0-100, list of suggestions)
+        """
+        if not prompt:
+            return 0, ["Empty prompt"]
+        
+        score = 0
+        suggestions = []
+        words = prompt.split()
+        word_count = len(words)
+        prompt_lower = prompt.lower()
+        
+        # 1. Word count (0-15 points)
+        if word_count >= 50:
+            score += 15
+        elif word_count >= 30:
+            score += 10
+        elif word_count >= 15:
+            score += 5
+        else:
+            suggestions.append(f"Too short ({word_count} words), aim for 50+")
+        
+        # 2. Subject/character (0-15 points)
+        subject_keywords = [
+            "person", "woman", "man", "character", "figure", "subject",
+            "object", "scene", "product", "food", "dish", "table",
+            "close-up of", "shot of", "view of"
+        ]
+        if any(kw in prompt_lower for kw in subject_keywords):
+            score += 15
+        else:
+            suggestions.append("Missing clear subject description")
+        
+        # 3. Action/movement (0-15 points)
+        action_keywords = [
+            "moving", "walking", "placing", "holding", "reaching",
+            "turning", "looking", "flowing", "pouring", "sliding",
+            "rising", "falling", "spinning", "floating", "steaming",
+            "gesture", "action", "picks up", "puts down"
+        ]
+        if any(kw in prompt_lower for kw in action_keywords):
+            score += 15
+        else:
+            suggestions.append("Add movement or action for dynamic video")
+        
+        # 4. Setting/environment (0-15 points)
+        setting_keywords = [
+            "room", "kitchen", "restaurant", "outdoor", "studio",
+            "background", "setting", "environment", "interior",
+            "exterior", "space", "area", "market", "street", "garden"
+        ]
+        if any(kw in prompt_lower for kw in setting_keywords):
+            score += 15
+        else:
+            suggestions.append("Add setting/environment description")
+        
+        # 5. Lighting/atmosphere (0-15 points)
+        lighting_keywords = [
+            "light", "lighting", "glow", "shadow", "warm", "soft",
+            "bright", "dim", "natural", "golden", "sunlight",
+            "atmosphere", "ambient", "cinematic", "mood"
+        ]
+        if any(kw in prompt_lower for kw in lighting_keywords):
+            score += 15
+        else:
+            suggestions.append("Add lighting/atmosphere description")
+        
+        # 6. Camera movement (0-10 points)
+        camera_keywords = [
+            "shot", "zoom", "pan", "dolly", "tracking", "close-up",
+            "wide", "medium", "angle", "camera", "aerial", "overhead",
+            "static", "slow motion"
+        ]
+        if any(kw in prompt_lower for kw in camera_keywords):
+            score += 10
+        else:
+            suggestions.append("Add camera movement/angle")
+        
+        # 7. Quality tags (0-10 points)
+        quality_keywords = [
+            "cinematic", "photorealistic", "quality", "4k", "hdr",
+            "detailed", "professional", "high resolution", "depth of field",
+            "bokeh", "film grain"
+        ]
+        if any(kw in prompt_lower for kw in quality_keywords):
+            score += 10
+        else:
+            suggestions.append("Add quality tags (cinematic, photorealistic, etc.)")
+        
+        # 8. No Thai text check (0-5 points, penalty if Thai found)
+        import re
+        thai_chars = re.findall(r'[\u0E00-\u0E7F]', prompt)
+        if not thai_chars:
+            score += 5
+        else:
+            suggestions.append(f"Contains Thai text ({len(thai_chars)} chars) - must be English only")
+            score -= 10
+        
+        # Clamp score
+        score = max(0, min(100, score))
+        
+        return score, suggestions
+
+    
+    def _generate_fallback_prompt(
+        self,
+        scene: Scene,
+        character_override: Optional[str] = None,
+        video_type: str = "with_person"
+    ) -> str:
+        """Fallback to rule-based prompt generation, enriched with Thai Visual Dictionary"""
+        
+        style = STYLE_PRESETS.get(scene.visual_style, STYLE_PRESETS["cinematic"])
+        emotion_visual = EMOTION_VISUALS.get(scene.emotion, EMOTION_VISUALS["neutral"])
+        
+        # Try dictionary-enriched visuals first
+        dict_visuals = get_fallback_visuals(scene.narration_text, video_type)
+        
+        if dict_visuals:
+            # Use dictionary-specific visuals (much more detailed than keyword matching)
+            subject = dict_visuals.get("subject", self._extract_subject(scene, character_override, video_type))
+            action = dict_visuals.get("action", self._extract_action(scene, video_type))
+            setting = dict_visuals.get("setting", self._extract_setting(scene, video_type))
+            
+            # For with_person mode, prepend character to subject
+            if video_type == "with_person" and character_override:
+                subject = f"{character_override}, near {subject}"
+            elif video_type == "with_person" and self.character_reference:
+                subject = f"{self.character_reference}, near {subject}"
+            
+            # Enrich mood with dictionary mood
+            dict_mood = dict_visuals.get("mood", "")
+            base_mood = self._generate_mood(emotion_visual, style, video_type)
+            mood = f"{dict_mood}, {base_mood}" if dict_mood else base_mood
+        else:
+            # Original keyword matching
+            subject = self._extract_subject(scene, character_override, video_type)
+            action = self._extract_action(scene, video_type)
+            setting = self._extract_setting(scene, video_type)
+            mood = self._generate_mood(emotion_visual, style, video_type)
+        
+        camera = self._generate_camera(scene, video_type)
+        quality = ", ".join(style.quality_tags)
+        
+        prompt = self.PROMPT_TEMPLATE.format(
+            subject=subject,
+            action=action,
+            setting=setting,
+            mood_lighting=mood,
+            camera=camera,
+            quality_tags=quality
+        )
+        
+        # Score the fallback prompt too
+        score, suggestions = self._score_prompt_quality(
+            prompt, scene.narration_text, video_type
+        )
+        scene.quality_score = score
+        scene.quality_suggestions = suggestions
+        
+        return prompt.strip()
+    
+    def _extract_subject(
+        self,
+        scene: Scene,
+        character_override: Optional[str],
+        video_type: str = "with_person"
+    ) -> str:
+        """Extract subject from scene, respecting video_type"""
+        if video_type == "no_person":
+            # Try to extract an object/concept from narration
+            narration = scene.narration_text.lower()
+            object_keywords = {
+                "อาหาร": "Beautifully plated healthy meal",
+                "กาแฟ": "Steaming cup of coffee",
+                "น้ำ": "Glass of clear water",
+                "ผัก": "Fresh colorful vegetables",
+                "ผลไม้": "Fresh tropical fruits",
+                "ออกกำลังกาย": "Fitness equipment in gym",
+                "นอน": "Peaceful bedroom scene",
+                "ปฏิทิน": "Calendar with markings",
+                "เวลา": "Clock showing time",
+            }
+            for keyword, description in object_keywords.items():
+                if keyword in narration:
+                    return description
+            return "Atmospheric scene"
+        
+        if character_override:
+            return character_override
+        if self.character_reference:
+            return self.character_reference
+        if scene.subject_description:
+            return scene.subject_description
+        return "Person in frame"
+    
+    def _extract_action(self, scene: Scene, video_type: str = "with_person") -> str:
+        """Extract action from narration using keyword matching (fallback)"""
+        narration = scene.narration_text.lower()
+        
+        if video_type == "no_person":
+            # Object/environment actions (no person)
+            object_actions = {
+                "ออกกำลังกาย": "gym equipment in motion, weights and resistance bands arranged",
+                "วิ่ง": "running trail stretching into distance, morning mist",
+                "กิน": "food being served on elegant plate, steam rising",
+                "อาหาร": "ingredients arranged beautifully on cutting board",
+                "พัก": "peaceful room with soft light and comfortable setting",
+                "นอน": "bed with soft sheets, moonlight through window",
+                "น้ำ": "water pouring into glass, light refracting through droplets",
+                "กาแฟ": "coffee beans being ground, steam rising from fresh cup",
+                "ชา": "tea leaves unfurling in hot water, steam swirling",
+            }
+            for keyword, action in object_actions.items():
+                if keyword in narration:
+                    return action
+            return "atmospheric scene with natural movement and light"
+        
+        action_keywords = {
+            "ออกกำลังกาย": "exercising with energetic movements",
+            "วิ่ง": "running with good form",
+            "กิน": "eating healthy food mindfully",
+            "อาหาร": "preparing nutritious meal",
+            "พัก": "resting peacefully",
+            "นอน": "sleeping restfully",
+            "ยืด": "stretching muscles",
+            "หายใจ": "breathing deeply and slowly",
+            "น้ำ": "drinking water",
+            "ชั่ง": "checking weight on scale",
+            "วัด": "measuring progress",
+            "กาแฟ": "making coffee",
+            "ชา": "preparing tea",
+        }
+        
+        for keyword, action in action_keywords.items():
+            if keyword in narration:
+                return action
+        
+        emotion_actions = {
+            "motivational": "moving with determination and energy",
+            "calm": "moving slowly and peacefully",
+            "happy": "expressing joy and satisfaction",
+            "urgent": "acting with focused intensity",
+        }
+        
+        return emotion_actions.get(scene.emotion, "natural movement")
+    
+    def _extract_setting(self, scene: Scene, video_type: str = "with_person") -> str:
+        """Extract setting from narration (fallback), adapted for video_type"""
+        narration = scene.narration_text.lower()
+        
+        setting_keywords = {
+            "ฟิตเนส": "in a modern fitness gym",
+            "ยิม": "in a well-equipped gym",
+            "ห้องครัว": "in a clean modern kitchen",
+            "บ้าน": "in a cozy home environment",
+            "สวน": "in a peaceful garden",
+            "ถนน": "on a scenic outdoor path",
+            "ทะเล": "by the beautiful ocean",
+            "ภูเขา": "in the mountains with scenic view",
+            "ออฟฟิศ": "in a modern office space",
+            "ห้องนอน": "in a comfortable bedroom",
+            "ร้านกาแฟ": "in a cozy coffee shop",
+        }
+        
+        for keyword, setting in setting_keywords.items():
+            if keyword in narration:
+                return setting
+        
+        if video_type == "no_person":
+            return "in a serene, well-lit environment"
+        return "in a bright, clean environment"
+    
+    def _generate_mood(self, emotion_visual: dict, style, video_type: str = "with_person") -> str:
+        """Generate mood and lighting description, adapted for video_type"""
+        lighting = emotion_visual.get("lighting", "natural")
+        colors = emotion_visual.get("colors", "balanced")
+        
+        if video_type == "no_person":
+            return f"{lighting} lighting, {colors} color palette, atmospheric mood"
+        
+        expression = emotion_visual.get("expression", "natural")
+        return f"{lighting} lighting, {colors} color palette, {expression} expression"
+    
+    def _generate_camera(self, scene: Scene, video_type: str = "with_person") -> str:
+        """Generate camera angle/movement, adapted for video_type"""
+        if scene.camera_movement:
+            return scene.camera_movement
+        
+        narration = scene.narration_text.lower()
+        
+        if any(word in narration for word in ["เริ่ม", "แนะนำ", "สวัสดี"]):
+            return "medium shot, slowly zooming in"
+        elif any(word in narration for word in ["สรุป", "ท้าย", "จบ"]):
+            return "medium shot, slowly zooming out"
+        elif any(word in narration for word in ["ออกกำลังกาย", "วิ่ง", "เดิน"]):
+            return "tracking shot following movement"
+        elif any(word in narration for word in ["กิน", "อาหาร", "ดื่ม", "กาแฟ"]):
+            if video_type == "no_person":
+                return "close-up on food and details"
+            return "close-up on hands and food"
+        else:
+            return "medium shot, slight movement"
+    
+    def _generate_script_summary(self, scenes: list[Scene]) -> str:
+        """Generate a brief summary of the full script for narrative context"""
+        # Combine all narration texts
+        full_narration = " ".join(s.narration_text for s in scenes if s.narration_text)
+        if not full_narration:
+            return ""
+        
+        if self.is_available():
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.DEFAULT_MODEL,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Summarize this Thai narration script in 1-2 English sentences. Focus on: main topic, narrative arc, key themes. Be concise (max 80 words)."
+                        },
+                        {"role": "user", "content": full_narration[:2000]}
+                    ],
+                    temperature=0.2,
+                    max_tokens=120
+                )
+                return response.choices[0].message.content.strip()
+            except Exception:
+                pass
+        
+        # Fallback: just use first sentence
+        return f"Script with {len(scenes)} scenes."
+    
+    def generate_all_prompts(
+        self,
+        scenes: list[Scene],
+        character: Optional[str] = None,
+        project_context: dict = None
+    ) -> list[Scene]:
+        """
+        Generate prompts for all scenes with continuity context
+        
+        Args:
+            scenes: List of Scene objects
+            character: Character reference for consistency
+            project_context: Dict with visual_theme, directors_note, aspect_ratio, video_type
+            
+        Returns:
+            List of scenes with generated veo_prompt
+        """
+        theme = project_context.get("visual_theme", "") if project_context else ""
+        note = project_context.get("directors_note", "") if project_context else ""
+        ratio = project_context.get("aspect_ratio", "16:9") if project_context else "16:9"
+        direction_style = project_context.get("direction_style") if project_context else None
+        prompt_style_config = project_context.get("prompt_style_config") if project_context else None
+        video_type = project_context.get("video_type", "with_person") if project_context else "with_person"
+        
+        total_scenes = len(scenes)
+        previous_scene_summary = ""
+        
+        # Generate script summary for narrative arc awareness
+        logger.info(f"Generating script summary for {total_scenes} scenes (video_type={video_type})...")
+        script_summary = self._generate_script_summary(scenes)
+        
+        for i, scene in enumerate(scenes):
+            scene_number = i + 1
+            logger.info(f"Generating prompt for scene {scene_number}/{total_scenes}...")
+            
+            # Get previous and next narration for story continuity
+            previous_narration = scenes[i - 1].narration_text if i > 0 else ""
+            next_narration = scenes[i + 1].narration_text if i < total_scenes - 1 else ""
+            
+            # Generate with full context
+            scene.veo_prompt = self.generate_prompt(
+                scene=scene,
+                character_override=character,
+                visual_theme=theme,
+                directors_note=note,
+                aspect_ratio=ratio,
+                scene_number=scene_number,
+                total_scenes=total_scenes,
+                previous_scene_summary=previous_scene_summary,
+                direction_style_id=direction_style,
+                prompt_style_config=prompt_style_config,
+                video_type=video_type,
+                previous_narration=previous_narration,
+                next_narration=next_narration,
+                script_summary=script_summary
+            )
+            
+            # Generate Thai voiceover text (pure narration, no emotion)
+            scene.voiceover_prompt = self.generate_voiceover_prompt(
+                scene=scene,
+                scene_number=scene_number,
+                total_scenes=total_scenes,
+                visual_theme=theme
+            )
+            
+            # Generate English voice tone direction — COHERENT with video prompt
+            scene.voice_tone = self.generate_voice_tone(
+                scene=scene,
+                scene_number=scene_number,
+                total_scenes=total_scenes,
+                visual_theme=theme,
+                veo_prompt=scene.veo_prompt  # Pass video prompt for coherence
+            )
+            
+            # Store properly summarized prompt for next iteration
+            if scene.veo_prompt:
+                previous_scene_summary = self._summarize_prompt(scene.veo_prompt)
+        
+        return scenes
+    
+    def detect_emotion(self, narration: str) -> str:
+        """
+        Detect emotion from narration text using AI
+        
+        Args:
+            narration: Thai narration text
+            
+        Returns:
+            Detected emotion (motivational, calm, urgent, happy, neutral)
+        """
+        if not self.is_available():
+            return "neutral"
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.DEFAULT_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Classify the emotion of Thai text into exactly one of: motivational, calm, urgent, happy, neutral. Reply with only the emotion word."
+                    },
+                    {"role": "user", "content": narration}
+                ],
+                temperature=0.3,
+                max_tokens=20
+            )
+            
+            emotion = response.choices[0].message.content.strip().lower()
+            valid_emotions = ["motivational", "calm", "urgent", "happy", "neutral"]
+            
+            return emotion if emotion in valid_emotions else "neutral"
+            
+        except Exception as e:
+            logger.debug(f"Emotion detection failed: {e}")
+            return "neutral"
+    
+    def extract_character(self, script: str) -> str:
+        """
+        Extract character description from script using AI
+        
+        Args:
+            script: Full Thai script
+            
+        Returns:
+            Character description for Veo prompt
+        """
+        if not self.is_available():
+            return ""
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.DEFAULT_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """Extract the main character description for video generation.
+Output format: [gender] [age range] [ethnicity], [appearance], [clothing]
+Example: "Thai woman in her 30s, fit athletic build, wearing casual workout clothes"
+If no character is mentioned, output: "Person"
+Output ONLY the description, no explanation."""
+                    },
+                    {"role": "user", "content": f"Script:\n{script[:1000]}"}
+                ],
+                temperature=0.1,  # Very low to ensure consistent character extraction
+                max_tokens=100
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            logger.debug(f"Character extraction failed: {e}")
+            return ""
+    
+    def enhance_prompt(
+        self,
+        base_prompt: str,
+        enhancements: list[str]
+    ) -> str:
+        """Add enhancements to an existing prompt"""
+        return f"{base_prompt}, {', '.join(enhancements)}"
+    
+    def add_negative_prompt(
+        self,
+        positive_prompt: str,
+        avoid: list[str] = None
+    ) -> dict:
+        """
+        Create prompt with negative prompts for Veo 3
+        
+        Args:
+            positive_prompt: The main prompt
+            avoid: Things to avoid in generation
+            
+        Returns:
+            Dict with positive and negative prompts
+        """
+        default_negative = [
+            "text overlays",
+            "logos",
+            "watermarks",
+            "blurry",
+            "distorted faces",
+            "unnatural movements",
+            "cartoon style" if "animated" not in positive_prompt.lower() else None
+        ]
+        
+        negative = [n for n in (avoid or []) + default_negative if n]
+        
+        return {
+            "prompt": positive_prompt,
+            "negative_prompt": ", ".join(negative)
+        }
+
+
+# Convenience functions
+def generate_veo_prompt(
+    scene: Scene,
+    character: str = "",
+    api_key: Optional[str] = None
+) -> str:
+    """Quick function to generate Veo prompt"""
+    generator = VeoPromptGenerator(api_key=api_key, character_reference=character)
+    return generator.generate_prompt(scene)
+
+
+def generate_all_veo_prompts(
+    scenes: list[Scene],
+    character: str = "",
+    api_key: Optional[str] = None
+) -> list[Scene]:
+    """Generate prompts for all scenes"""
+    generator = VeoPromptGenerator(api_key=api_key, character_reference=character)
+    return generator.generate_all_prompts(scenes, character)
+

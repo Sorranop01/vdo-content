@@ -1,0 +1,8 @@
+# Cloudflare Tunnel configuration for VDO Content
+tunnel: 50c1dfdd-44c4-4e3c-ad05-8a6082ecc1d7
+credentials-file: /home/agent/.cloudflared/50c1dfdd-44c4-4e3c-ad05-8a6082ecc1d7.json
+
+ingress:
+  - hostname: vdo.ecolifestore.org
+    service: http://localhost:8502
+  - service: http_status:404

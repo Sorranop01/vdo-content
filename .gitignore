@@ -1,0 +1,97 @@
+# VDO Content - Git Ignore Configuration
+# Security: Prevent sensitive files from being committed
+
+# ============ Top Priority Excludes ============
+.venv/
+venv/
+data/
+__pycache__/
+
+# ============ Environment & Secrets ============
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+credentials.json
+service-account*.json
+*-credentials.json
+.streamlit/secrets.toml
+
+# ============ Python ============
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ============ Virtual Environment ============
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# ============ IDE ============
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ============ Database ============
+*.db
+*.sqlite
+*.sqlite3
+data/projects/
+data/renders/
+
+# ============ Logs ============
+*.log
+logs/
+cloudflared.log
+my_cloudflared.log
+streamlit.log
+
+# ============ Cache ============
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ============ Generated Files ============
+exports/
+test_exports/
+tests/test_renders/
+tests/test_exports/
+
+# ============ Media Assets ============
+*.mp3
+*.mp4
+*.wav
+*.webm
+!templates/*.mp3
+
+# ============ Misc ============
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover

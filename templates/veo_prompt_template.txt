@@ -1,0 +1,85 @@
+# Veo 3 Prompt Template
+
+## Structure
+[SUBJECT DESCRIPTION]
+[ACTION/MOVEMENT]
+[SETTING/ENVIRONMENT]
+[LIGHTING/MOOD]
+[CAMERA ANGLE/MOVEMENT]
+[QUALITY TAGS]
+
+## Example for Health Content
+
+### Scene: Introduction
+Thai woman in her early 30s, athletic build, wearing stylish workout clothes,
+standing confidently with a warm smile,
+in a bright modern fitness studio with large windows,
+soft morning sunlight creating a motivational atmosphere,
+medium shot slowly zooming in on the subject,
+cinematic 4K, professional lighting, warm color grading
+
+### Scene: Exercise
+Thai woman in her early 30s, athletic build, wearing workout clothes,
+doing high-intensity interval training with energetic movements,
+in a well-equipped modern gym,
+dynamic lighting emphasizing movement and energy,
+tracking shot following the exercise movements,
+cinematic 4K, action camera style, sharp focus
+
+### Scene: Nutrition
+Hands preparing a colorful healthy meal,
+chopping fresh vegetables with precise movements,
+in a clean modern kitchen with natural light,
+bright, appetizing lighting highlighting food colors,
+close-up on hands and ingredients,
+high quality 4K, food photography style
+
+### Scene: Results/Success
+Thai woman in her early 30s looking happy and confident,
+checking progress in mirror with satisfied expression,
+in a bright bathroom or bedroom,
+soft, flattering morning light,
+medium shot slowly zooming out to reveal transformation,
+cinematic 4K, uplifting mood, warm tones
+
+## Keywords by Emotion
+
+### Motivational
+- determined expression
+- energetic movement
+- bright lighting
+- uplifting atmosphere
+- confident pose
+
+### Calm
+- peaceful expression
+- slow, deliberate movement
+- soft lighting
+- serene atmosphere
+- relaxed pose
+
+### Urgent
+- focused expression
+- quick, purposeful movement
+- dramatic lighting
+- intense atmosphere
+- alert pose
+
+### Happy
+- smiling expression
+- light movement
+- warm lighting
+- cheerful atmosphere
+- open pose
+
+## Camera Movement Options
+- static shot
+- slow zoom in
+- slow zoom out
+- pan left to right
+- pan right to left
+- tracking shot
+- dolly in/out
+- aerial view
+- low angle
+- high angle

@@ -1,0 +1,13 @@
+{
+  "name": "vdo-content",
+  "version": "2.2.0",
+  "description": "AI Content Pipeline for Video Creation",
+  "scripts": {
+    "dev": "streamlit run app.py",
+    "api": "uvicorn src.backend.api.main:app --reload --port 8000",
+    "start": "npm run dev",
+    "install": "pip install -r requirements.txt",
+    "test": "pytest tests/ -v",
+    "clean": "find . -type d -name __pycache__ -exec rm -rf {} + && find . -type f -name '*.pyc' -delete"
+  }
+}

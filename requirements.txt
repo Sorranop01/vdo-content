@@ -1,0 +1,43 @@
+# VDO Content V2 - Dependencies
+
+# Core
+streamlit>=1.30.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0  # Required for BaseSettings in Pydantic v2
+python-dotenv>=1.0.0
+
+# AI Generation
+openai>=1.0.0  # For DeepSeek API compatibility
+google-cloud-texttospeech>=2.14.0  # For Gemini 2.5 TTS (optional, requires service account)
+
+# Audio Analysis
+pydub>=0.25.1
+faster-whisper>=1.0.0  # For audio transcription with timestamps
+
+# Database
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+
+# Utils
+pyperclip>=1.8.0
+requests>=2.31.0
+
+# FastAPI Backend (NEW)
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6
+
+# Voice Preview (Phase 2)
+edge-tts>=6.1.0
+
+# Testing (NEW)
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+httpx>=0.26.0
+
+
+# Note: pydub requires ffmpeg installed on system
+# Ubuntu: apt-get install ffmpeg
+# macOS: brew install ffmpeg
+
