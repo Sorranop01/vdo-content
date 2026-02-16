@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
 
 env:
-  PROJECT_ID: super-app-442313
+  PROJECT_ID: ecol-b0859
   REGION: asia-southeast1
   SERVICE: vdo-content
   REPOSITORY: vdo-content
-  IMAGE: asia-southeast1-docker.pkg.dev/super-app-442313/vdo-content/app
+  IMAGE: asia-southeast1-docker.pkg.dev/ecol-b0859/vdo-content/app
 
 jobs:
   deploy:
