@@ -3,7 +3,14 @@ AI Studio Output Generator for VDO Content V2
 Generates Style Instructions + Text for Google AI Studio voice generation
 """
 
+
 from .models import Project, StylePreset, STYLE_PRESETS
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
+def _get_client(api_key: str):
+    from openai import OpenAI
+    return OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
 
 def generate_ai_studio_output(
@@ -32,8 +39,7 @@ def generate_ai_studio_output(
     # Generate concise English style instructions using DeepSeek
     if api_key:
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+            client = _get_client(api_key)
             
             # Prepare context for AI
             voice_type = _get_voice_type(project)

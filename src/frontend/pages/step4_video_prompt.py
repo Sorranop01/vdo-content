@@ -10,6 +10,7 @@ from src.core.models import Scene
 from src.shared.project_manager import save_project
 from src.frontend.utils import show_back_button, auto_save_project, copy_to_clipboard, export_all_prompts, show_step_guard
 from src.config.constants import STEP_SCRIPT, STEP_UPLOAD, VIDEO_TYPES
+from src.core.llm_config import LLM_PROVIDERS
 
 # Try import prompt generator
 try:
@@ -55,13 +56,19 @@ def render():
     
     video_type_options = {vt[0]: vt[1] for vt in VIDEO_TYPES}
     
+    def _on_video_type_change():
+        project.video_type = st.session_state.step4_video_type
+        st.session_state.current_project = project
+        auto_save_project()
+    
     selected_video_type = st.radio(
         "เลือกประเภทวีดีโอ",
         options=list(video_type_options.keys()),
         format_func=lambda x: video_type_options.get(x, x),
         index=list(video_type_options.keys()).index(project.video_type) if project.video_type in video_type_options else 0,
         horizontal=True,
-        key="step4_video_type"
+        key="step4_video_type",
+        on_change=_on_video_type_change
     )
     project.video_type = selected_video_type
     
@@ -69,12 +76,18 @@ def render():
     if selected_video_type == "with_person":
         st.info("👤 วีดีโอแบบมีคน - จะเน้น Character Reference เพื่อความสม่ำเสมอ")
         
+        def _on_character_change():
+            project.character_reference = st.session_state.step4_character
+            st.session_state.current_project = project
+            auto_save_project()
+        
         character_ref = st.text_area(
             "🧑 Character Reference",
             value=project.character_reference,
             height=80,
             placeholder="เช่น ผู้หญิงไทย อายุ 30 ต้นๆ ผมยาวสีดำ สวมเสื้อสีชมพู...",
-            key="step4_character"
+            key="step4_character",
+            on_change=_on_character_change
         )
         project.character_reference = character_ref
         
@@ -178,18 +191,67 @@ def render():
         )
         
         enable_qa = st.checkbox("🔍 QA Review (AI ตรวจสอบ)", value=False)
+        
+        # ===== LLM PROVIDER SELECTOR =====
+        st.markdown("---")
+        st.markdown("**🤖 AI Model**")
+        
+        # Build provider options (available first, then unavailable)
+        available_keys = [k for k, p in LLM_PROVIDERS.items() if p.is_available]
+        unavailable_keys = [k for k, p in LLM_PROVIDERS.items() if not p.is_available]
+        all_provider_keys = available_keys + unavailable_keys
+        
+        provider_labels = {}
+        for key in all_provider_keys:
+            p = LLM_PROVIDERS[key]
+            if p.is_available:
+                cost = p.models[0].cost_per_1k
+                cost_label = "ฟรี" if cost == 0.0 else f"${cost}/1K"
+                provider_labels[key] = f"✅ {p.name} ({cost_label})"
+            else:
+                provider_labels[key] = f"🔒 {p.name} (ไม่มี key)"
+        
+        default_idx = all_provider_keys.index("deepseek") if "deepseek" in all_provider_keys else 0
+        
+        selected_provider = st.selectbox(
+            "เลือก Provider",
+            options=all_provider_keys,
+            format_func=lambda x: provider_labels.get(x, x),
+            index=default_idx,
+            key="step4_llm_provider"
+        )
+        
+        # Model sub-selector
+        provider_obj = LLM_PROVIDERS.get(selected_provider)
+        selected_model = None
+        if provider_obj:
+            model_options = [(m.id, m.name) for m in provider_obj.models]
+            selected_model = st.selectbox(
+                "Model",
+                options=[m[0] for m in model_options],
+                format_func=lambda x: next((m[1] for m in model_options if m[0] == x), x),
+                key="step4_llm_model"
+            )
+            st.caption(f"💪 {', '.join(provider_obj.strengths)}")
+            if not provider_obj.is_available:
+                st.warning(f"⚠️ ต้องตั้งค่า `{provider_obj.env_key}` ใน .env")
     
     # Generate button
     if project.audio_segments:
         if st.button("🎬 สร้าง Veo Prompts", type="primary", use_container_width=True):
             if not PROMPT_GEN_AVAILABLE:
                 st.error("❌ Prompt Generator ไม่พร้อมใช้งาน")
+            elif provider_obj and not provider_obj.is_available:
+                st.error(f"❌ {provider_obj.name} ยังไม่มี API Key — กรุณาตั้งค่า `{provider_obj.env_key}` ใน .env")
             else:
                 try:
-                    with st.spinner("🔄 กำลังสร้าง Prompts..."):
+                    prov_name = provider_obj.name if provider_obj else 'AI'
+                    with st.spinner(f"🔄 กำลังสร้าง Prompts ด้วย {prov_name}..."):
                         prompt_gen = VeoPromptGenerator(
                             character_reference=project.character_reference,
-                            enable_qa=enable_qa
+                            enable_qa=enable_qa,
+                            provider=selected_provider,
+                            model=selected_model,
                         )
                         
                         # Create scenes from audio segments
@@ -207,13 +269,20 @@ def render():
                             scene.estimated_duration = seg.duration
                             scenes.append(scene)
                         
-                        # Project context for prompt generation
+                        # Project context for prompt generation (ENRICHED)
                         project_context = {
                             "visual_theme": project.visual_theme,
                             "directors_note": project.directors_note,
                             "aspect_ratio": project.aspect_ratio,
                             "video_type": selected_video_type,
-                            "prompt_style_config": project.prompt_style_config
+                            "prompt_style_config": project.prompt_style_config,
+                            # Platform & Content Context (NEW)
+                            "platforms": getattr(project, 'platforms', []),
+                            "topic": project.topic or project.content_description or "",
+                            "content_category": getattr(project, 'content_category', ''),
+                            "video_format": getattr(project, 'video_format', ''),
+                            "content_goal": getattr(project, 'content_goal', ''),
+                            "target_audience": getattr(project, 'target_audience', ''),
                         }
                         
                         scenes = prompt_gen.generate_all_prompts(
@@ -226,12 +295,12 @@ def render():
                         st.session_state.current_project = project
                         auto_save_project()
                         
-                        st.success(f"✅ สร้างสำเร็จ {len(scenes)} Prompts!")
+                        st.success(f"✅ สร้างสำเร็จ {len(scenes)} Prompts! (ใช้ {prompt_gen.provider_name}/{prompt_gen.active_model})")
                         st.rerun()
                         
                 except Exception as e:
                     st.error(f"❌ สร้าง Prompt ไม่สำเร็จ: {e}")
-                    st.info("💡 ลองตรวจสอบ: 1) มีบทพูดจาก Step 3 2) API Key ถูกต้อง 3) ลองกดใหม่อีกครั้ง")
+                    st.info("💡 ลองตรวจสอบ: 1) มีบทพูดจาก Step 3 2) API Key ถูกต้อง 3) ลองเปลี่ยน Provider 4) ลองกดใหม่อีกครั้ง")
     
     st.markdown("---")
     

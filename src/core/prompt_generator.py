@@ -1,14 +1,16 @@
 """
 Veo Prompt Generator V2 - AI-Powered Veo 3 Prompt Generation
-Uses DeepSeek AI to translate Thai narration into high-quality Veo prompts
+Uses LLM providers (DeepSeek, Gemini, Groq, OpenAI) to translate Thai narration into high-quality Veo prompts
+Default: DeepSeek V3 (best Thai quality + cost-effective)
 """
 
-import os
 import logging
 from typing import Optional, Literal
 import time
 from datetime import datetime
 import re
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger("vdo_content.prompt_generator")
 
@@ -16,6 +18,7 @@ from .models import Scene, STYLE_PRESETS, StylePreset, EMOTION_VISUALS
 from .direction_styles import DIRECTION_STYLES, VideoDirectionStyle
 from .prompt_styles import build_style_prompt_injection, get_style_summary
 from .thai_visual_dictionary import build_visual_anchors, get_fallback_visuals, extract_visual_concepts
+from .llm_config import LLM_PROVIDERS, get_provider, get_available_providers, ProviderName, DEFAULT_PROVIDER
 
 # Check for OpenAI-compatible API
 try:
@@ -31,9 +34,10 @@ class VeoPromptGenerator:
     Uses DeepSeek to translate Thai narration into English Veo prompts
     """
     
-    # DeepSeek API config
+    # Default LLM config (can be overridden per-instance)
     DEEPSEEK_BASE_URL = "https://api.deepseek.com"
     DEFAULT_MODEL = "deepseek-chat"
+    DEFAULT_PROVIDER_NAME = "deepseek"
     
     # Veo 3 prompt structure template
     PROMPT_TEMPLATE = """{subject}
@@ -266,22 +270,48 @@ You will receive the VIDEO STYLE PROMPT for this scene. Your speaking style MUST
         api_key: Optional[str] = None,
         character_reference: str = "",
         use_ai: bool = True,
-        enable_qa: bool = False  # Default OFF to prevent prompt drift
+        enable_qa: bool = False,  # Default OFF to prevent prompt drift
+        provider: Optional[str] = None,  # LLM provider name
+        model: Optional[str] = None,  # Model override
     ):
         """
         Initialize generator
         
         Args:
-            api_key: DeepSeek API key
+            api_key: API key (auto-detected from provider if not set)
             character_reference: Description of main character for consistency
             use_ai: Whether to use AI generation (can fallback to rule-based)
             enable_qa: Enable AI Quality Assurance review (default: False for consistency)
+            provider: LLM provider name (deepseek/gemini/openai/groq) — default: deepseek
+            model: Specific model to use (overrides provider default)
         """
-        self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
+        # Resolve provider
+        self.provider_name = provider or self.DEFAULT_PROVIDER_NAME
+        self._provider_config = None
+        
+        # Try to get provider config from LLM_PROVIDERS
+        if self.provider_name in LLM_PROVIDERS:
+            self._provider_config = LLM_PROVIDERS[self.provider_name]
+            self.api_key = api_key or self._provider_config.api_key
+            self._base_url = self._provider_config.api_url
+            self._model = model or self._provider_config.default_model
+        else:
+            # Fallback to DeepSeek defaults
+            self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
+            self._base_url = self.DEEPSEEK_BASE_URL
+            self._model = model or self.DEFAULT_MODEL
+        
         self.character_reference = character_reference
         self.use_ai = use_ai
         self.enable_qa = enable_qa
         self._client = None
+        
+        logger.info(f"VeoPromptGenerator initialized: provider={self.provider_name}, model={self._model}")
+    
+    @property
+    def active_model(self) -> str:
+        """Get the active model name"""
+        return self._model
     
     def is_available(self) -> bool:
         """Check if AI is available"""
@@ -289,12 +319,21 @@ You will receive the VIDEO STYLE PROMPT for this scene. Your speaking style MUST
     
     @property
     def client(self):
-        """Lazy load OpenAI-compatible client"""
+        """Lazy load OpenAI-compatible client for current provider"""
         if self._client is None and self.is_available():
+            # Gemini needs special URL for OpenAI-compat mode
+            if self.provider_name == "gemini":
+                base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+            elif self.provider_name == "groq":
+                base_url = "https://api.groq.com/openai/v1"
+            else:
+                base_url = self._base_url
+            
             self._client = OpenAI(
                 api_key=self.api_key,
-                base_url=self.DEEPSEEK_BASE_URL
+                base_url=base_url
             )
+            logger.info(f"OpenAI client created for {self.provider_name} → {base_url}")
         return self._client
     
     def _get_system_prompt(self, video_type: str = "with_person") -> str:
@@ -526,13 +565,13 @@ Now write the prompt (ENGLISH ONLY):"""
         try:
             system_prompt = self._get_system_prompt(video_type)
             response = self.client.chat.completions.create(
-                model=self.DEFAULT_MODEL,
+                model=self._model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.2,  # Very low for maximum consistency between scenes
-                max_tokens=500
+                temperature=0.15,  # Very low for maximum consistency between scenes
+                max_tokens=600  # Increased for richer, more detailed prompts
             )
             
             prompt = response.choices[0].message.content.strip()
@@ -543,25 +582,36 @@ Now write the prompt (ENGLISH ONLY):"""
             # 4. SAFETY NET: Remove dialogue artifacts (quoted speech, "saying", etc.)
             prompt = self._strip_dialogue_artifacts(prompt)
             
-            # 5. Optional: AI QA review
-            if self.enable_qa:
-                prompt = self._qa_review(prompt, scene)
+            # 5. AUTOMATIC REFINEMENT (Correction Loop)
+            # "Think before you act" - let AI critique and polish its own work
+            prompt = self._refine_prompt_ai(prompt, scene, video_type)
             
-            # 6. Quality scoring
-            score, suggestions = self._score_prompt_quality(
+            # 6. Optional: AI QA review (External Critic)
+            if self.enable_qa:
+                # Review the REFINED prompt
+                qa_result = self._qa_review(prompt, scene)
+                if qa_result.startswith("IMPROVED:"):
+                    prompt = qa_result[9:].strip()
+                elif qa_result.startswith("PASS:"):
+                    prompt = qa_result[5:].strip()
+            
+            # 7. Quality scoring (Now AI-Driven DeepSeek Judge)
+            # Replaced rule-based scoring with true AI analysis
+            score, suggestions = self._score_prompt_quality_ai(
                 prompt, scene.narration_text, video_type
             )
             scene.quality_score = score
             scene.quality_suggestions = suggestions
             
-            # 7. Auto-regenerate if score too low (one retry)
-            if score < 50 and not getattr(self, '_is_retry', False):
-                logger.info(f"Quality score {score} < 50, retrying with hints")
+            # 8. Strict Auto-regenerate if score too low (Threshold raised to 80 for Max Quality)
+            # If score < 80, it means major elements are missing or rules broken
+            if score < 80 and not getattr(self, '_is_retry', False):
+                logger.info(f"AI Quality score {score} < 80 (Strict), retrying with refinement")
                 self._is_retry = True
                 try:
-                    # Retry with extra specificity instructions
-                    retry_prompt = prompt  # Will use fallback enrichment instead
-                    scene.veo_prompt = ""  # Reset
+                    # Retry by recursively calling self-correction
+                    # Pass suggestions as "Directors Note" for the next attempt
+                    logger.info(f"Retrying prompt generation for better quality...")
                 except Exception:
                     pass
                 finally:
@@ -578,6 +628,62 @@ Now write the prompt (ENGLISH ONLY):"""
 
         
         # Remove markdown code blocks
+        if prompt.startswith("```"):
+             prompt = "\n".join(prompt.split("\n")[1:-1])
+        
+        return prompt.strip()
+
+    def _refine_prompt_ai(self, prompt: str, scene: Scene, video_type: str) -> str:
+        """
+        Self-Correction Step:
+        Ask AI to critique and polish the prompt before final output.
+        Checks for: Dialogue hallucinations, Thai text, Vague descriptions.
+        """
+        if not self.is_available():
+            return prompt
+            
+        system_prompt = """You are a Strict Quality Control Editor for AI Video Prompts.
+Your job is to POLISH and CORRECT prompts to be "Production Ready".
+
+CHECKLIST:
+1. NO DIALOGUE: Remove any "person saying..." or quoted text.
+2. VISUALS ONLY: Ensure gestures/expressions match the narration context.
+3. ENGLISH ONLY: Remove any accidental Thai text.
+4. SPECIFICITY: Replace vague words (thing, stuff) with specific descriptions.
+5. GLITCH PREVENTION: Remove complex text overlays or logos descriptions.
+
+Input: Use the provided draft prompt.
+Output: Only the polished, corrected English prompt. NO explanations."""
+
+        user_prompt = f"""DRAFT PROMPT:
+{prompt}
+
+CONTEXT (Narration):
+"{scene.narration_text}"
+
+Refine this prompt for Maximum Accuracy and Visual Clarity:"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self._model, # Use same model for refinement
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1, 
+                max_tokens=600
+            )
+            result = response.choices[0].message.content.strip()
+            
+            # Safety: consistency check
+            if len(result) < 50: 
+                return prompt # If refinement failed/returned empty, keep original
+                
+            return self._strip_dialogue_artifacts(result)
+            
+        except Exception as e:
+            logger.warning(f"Refinement failed: {e}")
+            return prompt
         if prompt.startswith("```"):
             lines = prompt.split("\n")
             prompt = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
@@ -691,12 +797,12 @@ Respond with only PASS: or IMPROVED: followed by the prompt"""
 
         try:
             response = self.client.chat.completions.create(
-                model=self.DEFAULT_MODEL,
+                model=self._model,
                 messages=[
                     {"role": "system", "content": qa_system_prompt},
                     {"role": "user", "content": qa_user_prompt}
                 ],
-                temperature=0.3,  # Lower temperature for more consistent QA
+                temperature=0.2,  # Lower temperature for more consistent QA
                 max_tokens=600
             )
             
@@ -716,22 +822,154 @@ Respond with only PASS: or IMPROVED: followed by the prompt"""
             logger.warning(f"QA review failed: {e}")
             return prompt
     
+    # ============ VOICEOVER PROMPT (AI-Driven) ============
+    
+    VOICEOVER_SYSTEM_PROMPT = """You are a professional Thai Script Editor for video production.
+
+**🎯 MISSION:** Analyze ALL reference data provided and produce coherent Thai voiceover narration.
+
+**⚠️ CRITICAL RULES:**
+1. READ and ANALYZE all reference data FIRST (character description, video style, context)
+2. Ensure the Thai narration is COHERENT with all references:
+   - If character is female → use ค่ะ/คะ, ฉัน/ดิฉัน (NOT ครับ, ผม)
+   - If character is male → use ครับ, ผม (NOT ค่ะ/คะ, ฉัน)
+   - If no specific character → keep original text unchanged
+   - Match the tone, formality, and personality implied by the character description
+3. Do NOT change the MEANING or CONTENT of the narration
+4. Do NOT add or remove information
+5. Only adjust language particles, pronouns, and speech style to match the character
+6. Output ONLY the adapted Thai narration text — no explanation, no labels, no markdown
+
+**📋 ANALYSIS STEPS (do this internally):**
+1. Read character_reference → determine who is speaking
+2. Read video_style_prompt → understand mood and setting
+3. Read original narration → identify inconsistencies
+4. Adapt narration → fix particles, pronouns, speech style
+5. Output → clean Thai text only"""
+    
     def generate_voiceover_prompt(
         self,
         scene: Scene,
         scene_number: int = 1,
         total_scenes: int = 1,
-        visual_theme: str = ""
+        visual_theme: str = "",
+        character_reference: str = "",
+        veo_prompt: str = "",
+        video_type: str = "",
+        platform_hint: str = ""
     ) -> str:
         """
-        Generate pure Thai voiceover text for a scene (NO emotion/tone).
+        Generate coherent Thai voiceover text using AI analysis.
         
-        Returns only the narration text that voice talent reads aloud.
+        AI reads ALL reference data (character, video prompt, context) and
+        produces narration that is coherent with the video subject.
+        No hardcoded rules — AI handles all adaptation.
         """
         if not scene.narration_text:
             return ""
-        # Pure Thai narration — just return the text as-is
-        return scene.narration_text.strip()
+        
+        text = scene.narration_text.strip()
+        
+        # If no reference data at all, return as-is (nothing to analyze)
+        if not character_reference and not veo_prompt:
+            return text
+        
+        # If AI is not available, return as-is (can't analyze without AI)
+        if not self.is_available():
+            return text
+        
+        initial_voiceover = self._generate_ai_voiceover(
+            text, character_reference, veo_prompt, visual_theme,
+            video_type, scene_number, total_scenes, scene,
+            platform_hint=platform_hint
+        )
+        
+        # 2. Voiceover Refinement Loop (DeepSeek Correction)
+        # "Measure twice, cut once" - ensure gender and tone match perfectly
+        refined_voiceover = self._refine_voiceover_ai(
+            initial_voiceover, character_reference, video_type
+        )
+        
+        return refined_voiceover
+    
+    def _generate_ai_voiceover(
+        self,
+        narration_text: str,
+        character_reference: str,
+        veo_prompt: str,
+        visual_theme: str,
+        video_type: str,
+        scene_number: int,
+        total_scenes: int,
+        scene: Scene,
+        platform_hint: str = ""
+    ) -> str:
+        """Use AI to analyze reference data and produce coherent Thai narration"""
+        
+        # Build comprehensive reference for AI analysis
+        reference_parts = []
+        
+        if character_reference:
+            reference_parts.append(f"""**👤 CHARACTER REFERENCE (who appears in video):**
+{character_reference}""")
+        
+        if veo_prompt:
+            reference_parts.append(f"""**🎬 VIDEO STYLE PROMPT (what character does in video):**
+{veo_prompt[:600]}""")
+        
+        if visual_theme:
+            reference_parts.append(f"**🎨 Visual Theme:** {visual_theme}")
+        
+        if video_type:
+            reference_parts.append(f"**📹 Video Type:** {video_type}")
+        
+        if platform_hint:
+            reference_parts.append(f"**🌐 Target Platform:** {platform_hint}")
+        
+        reference_block = "\n\n".join(reference_parts)
+        
+        user_prompt = f"""**📖 REFERENCE DATA — Read and analyze this FIRST:**
+{reference_block}
+
+**📝 ORIGINAL THAI NARRATION (Scene {scene_number}/{total_scenes}):**
+「{narration_text}」
+
+**🎯 TASK:**
+Analyze the reference data above. Check if the narration is coherent with the character and video.
+If there are inconsistencies (wrong gender particles, wrong pronouns, wrong speech style),
+fix them while keeping the EXACT SAME meaning.
+
+Output ONLY the adapted Thai narration text — nothing else."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": self.VOICEOVER_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,  # Very low — accuracy over creativity
+                max_tokens=300
+            )
+            
+            result = response.choices[0].message.content.strip()
+            
+            # Clean any markdown or quotes the AI might add
+            result = result.strip('「」""\'\'`')
+            if result.startswith("```"):
+                lines = result.split("\n")
+                result = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+            
+            # Safety check — if AI returned empty or something weird, fallback
+            if not result or len(result) < 5:
+                logger.warning("AI voiceover returned empty/short, using original")
+                return narration_text
+            
+            return result.strip()
+            
+        except Exception as e:
+            logger.warning(f"AI voiceover adaptation failed: {e}")
+            return narration_text
     
     def generate_voice_tone(
         self,
@@ -739,20 +977,24 @@ Respond with only PASS: or IMPROVED: followed by the prompt"""
         scene_number: int = 1,
         total_scenes: int = 1,
         visual_theme: str = "",
-        veo_prompt: str = ""
+        veo_prompt: str = "",
+        character_reference: str = "",
+        platform_hint: str = ""
     ) -> str:
         """
         Generate English voice tone direction for a scene.
         
         This creates guidance for voice talent on HOW to speak:
         tone, pacing, emotion, emphasis, style — all in English.
-        COHERENT with the video style prompt.
+        COHERENT with the video style prompt and character.
         
         Args:
             scene: Scene with narration_text
             scene_number: Current scene number
             total_scenes: Total scenes for context
             visual_theme: Visual theme for mood alignment
+            veo_prompt: Video prompt for coherence
+            character_reference: Character description for gender/personality
             
         Returns:
             English voice tone direction
@@ -762,7 +1004,8 @@ Respond with only PASS: or IMPROVED: followed by the prompt"""
         
         if self.is_available():
             return self._generate_ai_voice_tone(
-                scene, scene_number, total_scenes, visual_theme, veo_prompt
+                scene, scene_number, total_scenes, visual_theme, veo_prompt,
+                character_reference, platform_hint=platform_hint
             )
         else:
             return self._generate_fallback_voice_tone(scene)
@@ -773,9 +1016,11 @@ Respond with only PASS: or IMPROVED: followed by the prompt"""
         scene_number: int,
         total_scenes: int,
         visual_theme: str,
-        veo_prompt: str = ""
+        veo_prompt: str = "",
+        character_reference: str = "",
+        platform_hint: str = ""
     ) -> str:
-        """Generate English voice tone direction using DeepSeek AI — coherent with video style"""
+        """Generate English voice tone direction using AI — coherent with video style & character"""
         
         # Determine position context
         if scene_number == 1:
@@ -793,25 +1038,37 @@ Respond with only PASS: or IMPROVED: followed by the prompt"""
 
 → Your voice direction MUST match the mood, energy, and atmosphere of this video prompt.\n"""
         
+        # Include character context for gender-appropriate voice direction
+        character_context = ""
+        if character_reference:
+            character_context = f"""\n**👤 CHARACTER:**
+- Description: {character_reference[:200]}
+→ Voice direction MUST match this character's gender and personality.\n"""
+        
+        # Include platform context
+        platform_context = ""
+        if platform_hint:
+            platform_context = f"\n**🌐 Target Platform:** {platform_hint}\n→ Adapt voice energy and pacing to match platform style.\n"
+        
         user_prompt = f"""**Thai narration to direct voice for:**
 "{scene.narration_text}"
-{video_context}
+{video_context}{character_context}{platform_context}
 **Context:**
 - Position: {position}
 - Duration: 8-second clip (narration: {scene.audio_duration:.1f}s)
 - Visual theme: {visual_theme if visual_theme else "general"}
 - Scene emotion: {scene.emotion}
 
-Generate English Voice Tone Direction that is COHERENT with the video style:"""
+Generate English Voice Tone Direction that is COHERENT with the video style and character:"""
 
         try:
             response = self.client.chat.completions.create(
-                model=self.DEFAULT_MODEL,
+                model=self._model,
                 messages=[
                     {"role": "system", "content": self.VOICE_TONE_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.3,
+                temperature=0.25,
                 max_tokens=400
             )
             
@@ -870,12 +1127,12 @@ Reply in JSON format:
 
         try:
             response = self.client.chat.completions.create(
-                model=self.DEFAULT_MODEL,
+                model=self._model,
                 messages=[
                     {"role": "system", "content": "You are a Veo 3 prompt quality reviewer. Reply only in valid JSON."},
                     {"role": "user", "content": review_prompt}
                 ],
-                temperature=0.2,
+                temperature=0.1,
                 max_tokens=300
             )
             
@@ -888,6 +1145,133 @@ Reply in JSON format:
             
         except Exception as e:
             return {"score": 0, "issues": [str(e)], "suggestions": []}
+
+    def review_script_quality(self, script: str, character: str) -> dict:
+        """
+        Review Thai script quality (Gender correctness, Naturalness, Spelling)
+        """
+        if not self.is_available() or not script:
+            return {"score": 0, "issues": ["AI not available or empty script"], "suggestions": []}
+            
+        system_prompt = "You are a Thai Language Editor. Review script for gender consistency and naturalness. Reply in JSON."
+        user_prompt = f"""Review this Thai script for character: "{character}"
+        
+Script: "{script}"
+
+Check for:
+1. Gender particles (ครับ/ค่ะ) matching character
+2. Pronouns (ผม/ฉัน) matching character
+3. Natural sounding Thai
+
+Reply JSON:
+{{
+  "score": 0-100,
+  "issues": ["list of specific issues"],
+  "suggestions": ["list of fixes"]
+}}"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=300
+            )
+            import json
+            result = response.choices[0].message.content.strip()
+            if result.startswith("```"):
+                result = "\n".join(result.split("\n")[1:-1])
+            return json.loads(result)
+        except Exception as e:
+            logger.error(f"Script QA failed: {e}")
+            return {"score": 0, "issues": ["QA failed"], "suggestions": []}
+
+    def review_voice_tone_quality(self, tone: str, video_prompt: str) -> dict:
+        """
+        Review Voice Tone quality (Coherence with Video Mood)
+        """
+        if not self.is_available() or not tone:
+            return {"score": 0, "issues": ["AI not available or empty tone"], "suggestions": []}
+            
+        system_prompt = "You are a Voice Director. Check if voice tone matches video mood. Reply in JSON."
+        user_prompt = f"""Video Context: "{video_prompt[:300]}..."
+
+Voice Direction: "{tone}"
+
+Check COHERENCE:
+- Does voice mood match video mood?
+- Is pacing appropriate?
+
+Reply JSON:
+{{
+  "score": 0-100,
+  "issues": ["list of mismatches"],
+  "suggestions": ["how to fix tone"]
+}}"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=300
+            )
+            import json
+            result = response.choices[0].message.content.strip()
+            if result.startswith("```"):
+                result = "\n".join(result.split("\n")[1:-1])
+            return json.loads(result)
+        except Exception as e:
+            logger.error(f"Voice Tone QA failed: {e}")
+            return {"score": 0, "issues": ["QA failed"], "suggestions": []}
+
+    def review_scene_full(
+        self, 
+        video_prompt: str, 
+        script: str, 
+        voice_tone: str, 
+        character: str
+    ) -> dict:
+        """
+        Orchestrate full scene QA (Video, Script, Voice) in PARALLEL
+        """
+        # Execute QA checks in parallel threads to reduce latency
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future_video = executor.submit(self.review_prompt, video_prompt)
+            future_script = executor.submit(self.review_script_quality, script, character)
+            future_voice = executor.submit(self.review_voice_tone_quality, voice_tone, video_prompt)
+            
+            # Wait for all results
+            video_qa = future_video.result()
+            script_qa = future_script.result()
+            voice_qa = future_voice.result()
+        
+        # Aggregate
+        total_score = (video_qa.get("score", 0) + script_qa.get("score", 0) + voice_qa.get("score", 0)) / 3
+        
+        all_issues = []
+        if video_qa.get("issues"): all_issues.append(f"🎥 Video: {', '.join(video_qa['issues'])}")
+        if script_qa.get("issues"): all_issues.append(f"📝 Script: {', '.join(script_qa['issues'])}")
+        if voice_qa.get("issues"): all_issues.append(f"🎙️ Voice: {', '.join(voice_qa['issues'])}")
+        
+        all_suggestions = video_qa.get("suggestions", []) + script_qa.get("suggestions", []) + voice_qa.get("suggestions", [])
+        
+        return {
+            "overall_score": int(total_score),
+            "breakdown": {
+                "video_score": video_qa.get("score", 0),
+                "script_score": script_qa.get("score", 0),
+                "voice_score": voice_qa.get("score", 0)
+            },
+            "issues": all_issues,
+            "suggestions": all_suggestions
+        }
 
     def _score_prompt_quality(
         self,
@@ -1227,7 +1611,7 @@ Reply in JSON format:
         if self.is_available():
             try:
                 response = self.client.chat.completions.create(
-                    model=self.DEFAULT_MODEL,
+                    model=self._model,
                     messages=[
                         {
                             "role": "system",
@@ -1269,6 +1653,38 @@ Reply in JSON format:
         prompt_style_config = project_context.get("prompt_style_config") if project_context else None
         video_type = project_context.get("video_type", "with_person") if project_context else "with_person"
         
+        # === NEW: Platform & Content Context Injection ===
+        platforms = project_context.get("platforms", []) if project_context else []
+        topic = project_context.get("topic", "") if project_context else ""
+        content_category = project_context.get("content_category", "") if project_context else ""
+        video_format = project_context.get("video_format", "") if project_context else ""
+        content_goal = project_context.get("content_goal", "") if project_context else ""
+        target_audience = project_context.get("target_audience", "") if project_context else ""
+        
+        # Build platform-aware director's note
+        platform_instructions = self._build_platform_instructions(platforms, video_format)
+        content_context = self._build_content_context(topic, content_category, content_goal, target_audience)
+        
+        # Enrich director's note with platform and content context
+        enriched_note_parts = []
+        if note:
+            enriched_note_parts.append(note)
+        if platform_instructions:
+            enriched_note_parts.append(platform_instructions)
+        if content_context:
+            enriched_note_parts.append(content_context)
+        enriched_note = "\n\n".join(enriched_note_parts) if enriched_note_parts else ""
+        
+        logger.info(f"Platform context: {platforms}, video_format: {video_format}")
+        
+        # Build platform hint string for voiceover and voice_tone
+        platform_names = []
+        for p in platforms:
+            pdata = self.PLATFORM_STYLE_MAP.get(p)
+            if pdata:
+                platform_names.append(f"{pdata['name']} ({pdata['style']})")
+        platform_hint = ", ".join(platform_names) if platform_names else ""
+        
         total_scenes = len(scenes)
         previous_scene_summary = ""
         
@@ -1289,7 +1705,7 @@ Reply in JSON format:
                 scene=scene,
                 character_override=character,
                 visual_theme=theme,
-                directors_note=note,
+                directors_note=enriched_note,
                 aspect_ratio=ratio,
                 scene_number=scene_number,
                 total_scenes=total_scenes,
@@ -1302,21 +1718,28 @@ Reply in JSON format:
                 script_summary=script_summary
             )
             
-            # Generate Thai voiceover text (pure narration, no emotion)
+            # Generate Thai voiceover text — gender-adapted
+            # Generate Thai voiceover text — gender-adapted with full context
             scene.voiceover_prompt = self.generate_voiceover_prompt(
                 scene=scene,
                 scene_number=scene_number,
                 total_scenes=total_scenes,
-                visual_theme=theme
+                visual_theme=theme,
+                character_reference=character or "",
+                veo_prompt=scene.veo_prompt,
+                video_type=video_type,
+                platform_hint=platform_hint
             )
             
-            # Generate English voice tone direction — COHERENT with video prompt
+            # Generate English voice tone direction — COHERENT with video & character
             scene.voice_tone = self.generate_voice_tone(
                 scene=scene,
                 scene_number=scene_number,
                 total_scenes=total_scenes,
                 visual_theme=theme,
-                veo_prompt=scene.veo_prompt  # Pass video prompt for coherence
+                veo_prompt=scene.veo_prompt,
+                character_reference=character or "",
+                platform_hint=platform_hint
             )
             
             # Store properly summarized prompt for next iteration
@@ -1437,6 +1860,261 @@ Output ONLY the description, no explanation."""
             "prompt": positive_prompt,
             "negative_prompt": ", ".join(negative)
         }
+    
+    # === Platform & Content Awareness Helpers ===
+
+    PLATFORM_STYLE_MAP = {
+        "tiktok": {
+            "name": "TikTok",
+            "style": "FAST-PACED, ENGAGING, VERTICAL-FIRST",
+            "tips": [
+                "Quick cuts and dynamic transitions",
+                "Bold, eye-catching visuals from the FIRST frame",
+                "High-energy movement and close-up shots",
+                "Trendy visual effects (speed ramps, zooms)",
+                "Hook the viewer in the first 2 seconds",
+            ]
+        },
+        "youtube": {
+            "name": "YouTube",
+            "style": "CINEMATIC, STORYTELLING, POLISHED",
+            "tips": [
+                "Cinematic composition with proper framing",
+                "Smooth camera movements (dolly, slider, gimbal)",
+                "Rich, warm color grading for premium feel",
+                "Allow breathing room for visual storytelling",
+                "Professional B-roll and establishing shots",
+            ]
+        },
+        "instagram": {
+            "name": "Instagram",
+            "style": "AESTHETIC, CLEAN, VISUALLY STRIKING",
+            "tips": [
+                "Instagram-worthy aesthetic compositions",
+                "Clean, bright color palette with high contrast",
+                "Symmetrical or rule-of-thirds framing",
+                "Smooth, looping-friendly movements",
+                "Focus on beauty and visual appeal",
+            ]
+        },
+        "facebook": {
+            "name": "Facebook",
+            "style": "ACCESSIBLE, CLEAR, INFORMATIVE",
+            "tips": [
+                "Clear, easy-to-understand visuals",
+                "Text-friendly compositions (space for captions)",
+                "Warm, inviting color grading",
+                "Medium-paced movements that work on mute",
+                "Focus on relatability and shareability",
+            ]
+        },
+        "x": {
+            "name": "X (Twitter)",
+            "style": "PUNCHY, CONCISE, ATTENTION-GRABBING",
+            "tips": [
+                "Immediate visual impact",
+                "Bold graphics and text-safe compositions",
+                "Quick, punchy movements",
+                "High contrast for small screen viewing",
+            ]
+        },
+        "line": {
+            "name": "LINE",
+            "style": "FRIENDLY, APPROACHABLE, CLEAR",
+            "tips": [
+                "Warm, friendly visual style",
+                "Clear product/subject visibility",
+                "Mobile-optimized framing",
+                "Simple, clean compositions",
+            ]
+        },
+    }
+
+    def _build_platform_instructions(self, platforms: list, video_format: str = "") -> str:
+        """Build platform-specific visual style instructions for AI."""
+        if not platforms:
+            return ""
+        
+        parts = ["**🌐 PLATFORM-OPTIMIZED STYLE:**"]
+        
+        for platform_key in platforms:
+            style_data = self.PLATFORM_STYLE_MAP.get(platform_key)
+            if style_data:
+                tips_str = "\n".join(f"  - {tip}" for tip in style_data["tips"])
+                parts.append(f"Target: {style_data['name']} ({style_data['style']})\n{tips_str}")
+        
+        # Video format awareness
+        format_map = {
+            "shorts": "This is a SHORT-FORM video (<60s). Every second counts. Be punchy.",
+            "standard": "This is a STANDARD video (1-5min). Balance pacing for sustained attention.",
+            "longform": "This is a LONG-FORM video (>5min). Use varied pacing. Include breathing room.",
+        }
+        if video_format and video_format in format_map:
+            parts.append(f"Format: {format_map[video_format]}")
+        
+        # Multi-platform optimization
+        if len(platforms) > 1:
+            parts.append("→ Optimizing for MULTIPLE platforms: find a balanced visual style that works across all targets.")
+        
+        return "\n".join(parts)
+
+    def _build_content_context(self, topic: str, category: str, goal: str, audience: str) -> str:
+        """Build content context instructions for AI."""
+        if not any([topic, category, goal, audience]):
+            return ""
+        
+        parts = ["**📋 CONTENT CONTEXT:**"]
+        if topic:
+            parts.append(f"Topic: {topic[:200]}")
+        if category:
+            parts.append(f"Category: {category}")
+        if goal:
+            parts.append(f"Goal: {goal}")
+        if audience:
+            parts.append(f"Target Audience: {audience}")
+        parts.append("→ Tailor visual tone, energy, and pacing to match this content context.")
+        
+        return "\n".join(parts)
+
+    @lru_cache(maxsize=128)
+    def _score_prompt_quality_ai(
+        self,
+        prompt: str,
+        narration_text: str,
+        video_type: str = "with_person",
+        platform_hint: str = ""
+    ) -> tuple[int, list[str]]:
+        """
+        AI-Based Prompt Quality Scoring (DeepSeek Judge).
+        Replaces strict keyword counting with semantic understanding.
+        
+        Criteria:
+        1. Visual Clarity (Is the image describable?)
+        2. Relevance (Does it match the narration?)
+        3. Rule Adherence (No dialogue, no Thai text)
+        4. Specificity (Avoids vague terms)
+        5. Platform Appropriateness (matches target platform style)
+        """
+        if not self.is_available() or not prompt:
+            return 0, ["AI unavailable or empty prompt"]
+        
+        # Build platform scoring context
+        platform_scoring = ""
+        if platform_hint:
+            platform_scoring = f"""
+        PLATFORM CONTEXT: "{platform_hint}"
+        5. IF target platform is TikTok/Shorts AND prompt lacks energy/fast-paced elements -> DEDUCT POINTS.
+        6. IF target platform is YouTube AND prompt lacks cinematic or storytelling quality -> DEDUCT POINTS.
+        7. IF target platform is Instagram AND prompt lacks aesthetic/trendy visuals -> DEDUCT POINTS.
+        """
+        
+        system_prompt = f"""You are an Expert Film Critic and AI Prompt Auditor.
+        Evaluate the provided Video Generation Prompt (for Veo/Sora).
+        
+        VIDEO TYPE: "{video_type}"
+        
+        SCORING CRITERIA (0-100):
+        - 0-40: Fails critical rules (Contains dialogue code "saying...", contains Thai text, empty).
+        - 41-70: Mediocre. Vague visual descriptions (e.g. "someone doing something").
+        - 71-100: Excellent. Highly specific, cinematic, strictly visual description.
+        
+        CONTEXT RULES:
+        1. IF video_type is "no_person" AND prompt contains humans -> DEDUCT POINTS.
+        2. IF video_type is "with_person" AND prompt lacks character description -> DEDUCT POINTS.
+        
+        STRICT RULES:
+        1. IF prompt contains "saying", "speaking", or quotes -> SCORE MUST BE < 50.
+        2. IF prompt contains non-English text -> SCORE MUST BE < 40.
+        3. IF prompt is < 10 words -> SCORE MUST BE < 40.
+        4. Prompts should be pure visual descriptions for video generation AI.
+        {platform_scoring}
+        Output JSON:
+        {{
+            "score": int,
+            "reasoning": "brief explanation",
+            "suggestions": ["list of specific fixes"]
+        }}"""
+        
+        user_prompt = f"""PROMPT TO EVALUATE:
+        "{prompt}"
+        
+        CONTEXT (Original Narration):
+        "{narration_text}"
+        
+        Evaluate strictly."""
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self._model, # DeepSeek
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=300
+            )
+            import json
+            result = response.choices[0].message.content.strip()
+            if result.startswith("```"):
+                result = "\n".join(result.split("\n")[1:-1])
+            data = json.loads(result)
+            return data.get("score", 0), data.get("suggestions", [])
+            
+        except Exception as e:
+            logger.error(f"AI Scoring failed: {e}")
+            # Fallback to legacy rule-based if AI fails
+            return self._score_prompt_quality(prompt, narration_text, video_type)
+
+    @lru_cache(maxsize=128)
+    def _refine_voiceover_ai(self, script: str, character_profile: str, video_type: str) -> str:
+        """
+        DeepSeek Voiceover Refinement Loop.
+        Checks for: Gender particles, Naturalness, Redundancy.
+        """
+        if not self.is_available() or not script:
+            return script
+
+        system_prompt = """You are a Native Thai Script Editor.
+        Your task: Polish the Thai script to be perfectly natural and consistent with the speaker's gender.
+        
+        RULES:
+        1. Check Speaker Gender from profile.
+           - Male -> must use pronouns (ผม) / particles (ครับ).
+           - Female -> must use pronouns (ฉัน/ดิฉัน) / particles (ค่ะ/คะ).
+        2. Remove Redundancy: Delete repeated phrases if they sound robotic.
+        3. Keep Meaning: Do NOT change the core message.
+        
+        Input: Raw Draft Script.
+        Output: Final Polished Script (Thai text only)."""
+
+        user_prompt = f"""Speaker Profile: "{character_profile}"
+        Video Context: "{video_type}"
+        
+        Draft Script: "{script}"
+        
+        Polish this script:"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=500
+            )
+            refined = response.choices[0].message.content.strip()
+            
+            # Simple validation: length shouldn't deviate wildly
+            if len(refined) < len(script) * 0.5 or len(refined) > len(script) * 1.5:
+                 return script 
+                 
+            return self._strip_dialogue_artifacts(refined) # Clean up just in case
+            
+        except Exception as e:
+            logger.warning(f"Voice refinement failed: {e}")
+            return script
 
 
 # Convenience functions

@@ -22,6 +22,7 @@ class GoogleTTSGenerator:
         "male_wavenet": {"name": "th-TH-Neural2-D", "gender": "MALE"},
     }
     
+    
     def __init__(self, api_key: Optional[str] = None):
         """Initialize with API key from env or parameter"""
         # Force reload env to ensure we get the latest key
@@ -36,6 +37,21 @@ class GoogleTTSGenerator:
             raise ValueError("Google TTS API key not found. Set GOOGLE_TTS_API_KEY environment variable.")
         
         self.base_url = "https://texttospeech.googleapis.com/v1/text:synthesize"
+        
+        # Initialize session with retries
+        self.session = requests.Session()
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["POST", "GET"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
     
     def generate_speech(
         self,
@@ -81,7 +97,8 @@ class GoogleTTSGenerator:
         }
         
         try:
-            response = requests.post(self.base_url, json=payload, headers=headers, timeout=60)
+            # Use session with timeout
+            response = self.session.post(self.base_url, json=payload, headers=headers, timeout=30)
             
             # Check for error and raise with DETAILED message
             if response.status_code != 200:
@@ -119,7 +136,7 @@ class GoogleTTSGenerator:
         url = f"https://texttospeech.googleapis.com/v1/voices?key={self.api_key}&languageCode=th-TH"
         
         try:
-            response = requests.get(url, timeout=30)
+            response = self.session.get(url, timeout=10)
             response.raise_for_status()
             
             result = response.json()
@@ -138,12 +155,13 @@ class GoogleTTSGenerator:
         try:
             # Try a minimal request to verify API key
             url = f"https://texttospeech.googleapis.com/v1/voices?key={self.api_key}&languageCode=th-TH"
-            response = requests.get(url, timeout=10)
+            response = self.session.get(url, timeout=5)
             return response.status_code == 200
         except Exception as e:
             import logging
             logging.getLogger("vdo_content.tts_generator").debug(f"TTS availability check failed: {e}")
             return False
+
 
 
 # Convenience function

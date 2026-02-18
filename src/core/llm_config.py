@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 
 # Provider types
-ProviderName = Literal["deepseek", "openai", "gemini", "claude", "kimi"]
+ProviderName = Literal["deepseek", "openai", "gemini", "claude", "kimi", "groq"]
 
 
 @dataclass
@@ -109,6 +109,19 @@ KIMI = LLMProvider(
     strengths=["Thai language", "Long context", "Creative"]
 )
 
+GROQ = LLMProvider(
+    name="Groq (Free, Ultra-fast)",
+    api_url="https://api.groq.com/openai/v1",
+    models=[
+        LLMModel("llama-3.3-70b-versatile", "LLaMA 3.3 70B", context_length=128000, cost_per_1k=0.0),
+        LLMModel("llama-3.1-8b-instant", "LLaMA 3.1 8B", context_length=128000, cost_per_1k=0.0),
+        LLMModel("gemma2-9b-it", "Gemma 2 9B", context_length=8192, cost_per_1k=0.0),
+    ],
+    default_model="llama-3.3-70b-versatile",
+    env_key="GROQ_API_KEY",
+    strengths=["Free", "Ultra-fast", "Good multilingual"]
+)
+
 
 # ============ Provider Registry ============
 
@@ -118,6 +131,7 @@ LLM_PROVIDERS: dict[ProviderName, LLMProvider] = {
     "gemini": GEMINI,
     "claude": CLAUDE,
     "kimi": KIMI,
+    "groq": GROQ,
 }
 
 DEFAULT_PROVIDER: ProviderName = "deepseek"
