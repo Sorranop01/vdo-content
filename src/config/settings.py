@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     
     # Database
     database_url: Optional[str] = None
+    firebase_project_id: str = "vdo-content-4e158"
     
     # Server
     api_host: str = "0.0.0.0"

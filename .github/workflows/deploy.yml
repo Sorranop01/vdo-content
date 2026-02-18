@@ -62,6 +62,7 @@ jobs:
             STREAMLIT_SERVER_HEADLESS=true
             STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
             DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}
+            FIREBASE_PROJECT_ID=vdo-content-4e158
 
       - name: Show URL
         run: echo "🚀 ${{ steps.deploy.outputs.url }}"
