@@ -15,13 +15,17 @@ from src.config.constants import (
 
 # Try import AI generators
 try:
-    from src.core.story_analyzer import StoryAnalyzer
+    # Lazy import in render() to avoid heavy startup
     AI_AVAILABLE = True
 except ImportError:
     AI_AVAILABLE = False
 
 try:
-    from src.core.database import get_video_profiles, get_content_goals, get_target_audiences
+    from src.frontend.data_cache import (
+        get_cached_video_profiles as get_video_profiles,
+        get_cached_content_goals as get_content_goals,
+        get_cached_target_audiences as get_target_audiences
+    )
     DB_AVAILABLE = True
 except ImportError:
     DB_AVAILABLE = False
@@ -285,6 +289,7 @@ def render():
                         if goal_hint:
                             context += f"\n💡 แนวทางการสร้างเนื้อหา: {goal_hint}\n"
                         
+                        from src.core.story_analyzer import StoryAnalyzer
                         analyzer = StoryAnalyzer(
                             api_key=selected_api_key,
                             model=model_cfg["model"],

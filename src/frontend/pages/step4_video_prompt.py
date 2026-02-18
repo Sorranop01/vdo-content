@@ -14,21 +14,19 @@ from src.core.llm_config import LLM_PROVIDERS
 
 # Try import prompt generator
 try:
-    from src.core.prompt_generator import VeoPromptGenerator
+    # Lazy imports to speed up app load
     PROMPT_GEN_AVAILABLE = True
 except ImportError:
     PROMPT_GEN_AVAILABLE = False
 
 # Try import scene splitter
 try:
-    from src.core.scene_splitter import SceneSplitter
     SCENE_SPLITTER_AVAILABLE = True
 except ImportError:
     SCENE_SPLITTER_AVAILABLE = False
 
 # Try import exporter
 try:
-    from src.core.exporter import ProjectExporter
     EXPORTER_AVAILABLE = True
 except ImportError:
     EXPORTER_AVAILABLE = False
@@ -121,6 +119,7 @@ def render():
                 with col_split:
                     if st.button("✂️ ซอย Script เป็นฉาก", type="primary", use_container_width=True):
                         try:
+                            from src.core.scene_splitter import SceneSplitter
                             splitter = SceneSplitter(max_duration=max_dur, language="th")
                             scenes = splitter.split_script(
                                 project.full_script,
@@ -247,6 +246,7 @@ def render():
                 try:
                     prov_name = provider_obj.name if provider_obj else 'AI'
                     with st.spinner(f"🔄 กำลังสร้าง Prompts ด้วย {prov_name}..."):
+                        from src.core.prompt_generator import VeoPromptGenerator
                         prompt_gen = VeoPromptGenerator(
                             character_reference=project.character_reference,
                             enable_qa=enable_qa,
@@ -313,6 +313,7 @@ def render():
         
         with col_export1:
             if EXPORTER_AVAILABLE:
+                from src.core.exporter import ProjectExporter
                 exporter = ProjectExporter()
                 prompts_text = exporter.export_all_prompts_text(project)
             else:

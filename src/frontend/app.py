@@ -198,27 +198,27 @@ def main():
     # Get current page
     page = st.session_state.get("page", STEP_PROJECT)
     
-    # Import new 5-step pages
-    from src.frontend.pages import (
-        step1_project, step2_content, step3_script,
-        step4_video_prompt, step5_upload,
-        database_tags, settings
-    )
-    
     # Render appropriate page
     if page == STEP_PROJECT:       # Step 1: สร้างโปรเจค
+        from src.frontend.pages import step1_project
         step1_project.render()
     elif page == STEP_CONTENT:     # Step 2: กำหนดคอนเทนต์
+        from src.frontend.pages import step2_content
         step2_content.render()
     elif page == STEP_SCRIPT:      # Step 3: บทพูด
+        from src.frontend.pages import step3_script
         step3_script.render()
     elif page == STEP_VIDEO_PROMPT: # Step 4: สร้าง Prompt
+        from src.frontend.pages import step4_video_prompt
         step4_video_prompt.render()
     elif page == STEP_UPLOAD:      # Step 5: อัพโหลดไฟล์
+        from src.frontend.pages import step5_upload
         step5_upload.render()
     elif page == STEP_DATABASE:    # Database & Tags
+        from src.frontend.pages import database_tags
         database_tags.render()
     elif page == STEP_SETTINGS:    # Settings
+        from src.frontend.pages import settings
         settings.render()
     else:
         st.warning("⚠️ ไม่พบหน้านี้")
