@@ -17,6 +17,11 @@ credentials.json
 service-account*.json
 *-credentials.json
 .streamlit/secrets.toml
+service.yaml
+wif_config.env
+wif_details.txt
+deploy_logs.txt
+validate_imports.py
 
 # ============ Python ============
 __pycache__/
