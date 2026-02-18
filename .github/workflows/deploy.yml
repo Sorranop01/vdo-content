@@ -61,8 +61,7 @@ jobs:
           env_vars: |
             STREAMLIT_SERVER_HEADLESS=true
             STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
-          secrets: |
-            DEEPSEEK_API_KEY=DEEPSEEK_API_KEY:latest
+            DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}
 
       - name: Show URL
         run: echo "🚀 ${{ steps.deploy.outputs.url }}"
