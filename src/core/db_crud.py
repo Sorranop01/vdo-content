@@ -5,6 +5,7 @@ Replaces the SQL-based db_crud.py.
 """
 
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
@@ -48,6 +49,9 @@ def _snapshot_to_dict(doc: firestore.DocumentSnapshot) -> dict:
     # If using Pydantic V2, it handles datetime objects fine.
     
     return data
+
+# Public alias for backward compatibility
+project_to_dict = _snapshot_to_dict
 
 # ============ Project CRUD ============
 
