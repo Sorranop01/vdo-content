@@ -35,15 +35,18 @@ def _safe_uuid(value: str) -> str:
 def get_visual_tags() -> dict:
     """Get all visual tags organized by category"""
     db = get_firestore_client()
-    docs = db.collection(COL_TAGS)\
-             .where("is_active", "==", True)\
-             .order_by("category")\
-             .order_by("order_num")\
-             .stream()
+    docs = db.collection(COL_TAGS).stream()
     
-    result = {}
+    # Client-side filter & sort (avoids composite index requirement)
+    all_tags = []
     for doc in docs:
         tag = doc.to_dict()
+        if tag.get("is_active", True):
+            all_tags.append(tag)
+    all_tags.sort(key=lambda t: (t.get("category", ""), t.get("order_num", 0)))
+    
+    result = {}
+    for tag in all_tags:
         category = tag.get("category")
         if category not in result:
             result[category] = []
@@ -112,21 +115,21 @@ def update_visual_tag(tag_id: str, label: str, value: str) -> bool:
 def get_all_tags_raw() -> List[dict]:
     """Get all tags as a flat list"""
     db = get_firestore_client()
-    docs = db.collection(COL_TAGS)\
-             .order_by("category")\
-             .order_by("order_num")\
-             .stream()
-             
-    return [
-        {
+    docs = list(db.collection(COL_TAGS).stream())
+    
+    # Client-side sort (avoids composite index requirement)
+    items = []
+    for doc in docs:
+        d = doc.to_dict()
+        items.append({
             "id": doc.id,
             "category": d.get("category"),
             "label": d.get("label"),
             "value": d.get("value"),
             "active": d.get("is_active", True)
-        }
-        for doc in docs for d in [doc.to_dict()]
-    ]
+        })
+    items.sort(key=lambda x: (x.get("category", ""), 0))
+    return items
 
 def delete_tag(tag_id: str) -> bool:
     """Delete a tag by ID"""
@@ -197,31 +200,34 @@ def delete_style_profile(profile_id: str) -> bool:
 def get_video_profiles() -> List[dict]:
     """Get all active video profiles"""
     db = get_firestore_client()
-    docs = db.collection(COL_VIDEO_PROFILES)\
-             .where("is_active", "==", True)\
-             .order_by("order_num")\
-             .stream()
-             
-    return [
-        {
-            "id": doc.id, # Using ID as document key for these system profiles
-            "name_th": d.get("name_th"),
-            "name_en": d.get("name_en"),
-            "description_th": d.get("description_th"),
-            "description_en": d.get("description_en"),
-            "icon": d.get("icon"),
-            "config": d.get("config")
-        }
-        for doc in docs for d in [doc.to_dict()]
-    ]
+    docs = list(db.collection(COL_VIDEO_PROFILES).stream())
+    
+    # Client-side filter & sort (avoids composite index requirement)
+    items = []
+    for doc in docs:
+        d = doc.to_dict()
+        if d.get("is_active", True):
+            items.append({
+                "id": doc.id,
+                "name_th": d.get("name_th"),
+                "name_en": d.get("name_en"),
+                "description_th": d.get("description_th"),
+                "description_en": d.get("description_en"),
+                "icon": d.get("icon"),
+                "config": d.get("config")
+            })
+    items.sort(key=lambda x: x.get("config", {}).get("order_num", 0) if isinstance(x.get("config"), dict) else 0)
+    return items
 
 def list_video_profiles() -> List[dict]:
     """List all video profiles (admin)"""
     db = get_firestore_client()
-    docs = db.collection(COL_VIDEO_PROFILES).order_by("order_num").stream()
+    docs = list(db.collection(COL_VIDEO_PROFILES).stream())
     
-    return [
-        {
+    items = []
+    for doc in docs:
+        d = doc.to_dict()
+        items.append({
             "id": doc.id,
             "name_th": d.get("name_th"),
             "name_en": d.get("name_en"),
@@ -230,9 +236,9 @@ def list_video_profiles() -> List[dict]:
             "icon": d.get("icon"),
             "config": d.get("config"),
             "is_system": d.get("is_system", False)
-        }
-        for doc in docs for d in [doc.to_dict()]
-    ]
+        })
+    items.sort(key=lambda x: d.get("order_num", 0))
+    return items
 
 def get_video_profile(profile_id: str) -> Optional[dict]:
     """Get single profile"""
@@ -265,62 +271,65 @@ def update_video_profile(profile_id: str, config: dict, name_th: str = None, nam
 
 def get_content_categories() -> List[dict]:
     db = get_firestore_client()
-    docs = db.collection(COL_CATEGORIES)\
-             .where("is_active", "==", True)\
-             .order_by("order_num")\
-             .stream()
-             
-    return [
-        {
-            "id": doc.id,
-            "name_th": d.get("name_th"),
-            "name_en": d.get("name_en"),
-            "description": d.get("description"),
-            "icon": d.get("icon")
-        }
-        for doc in docs for d in [doc.to_dict()]
-    ]
+    docs = list(db.collection(COL_CATEGORIES).stream())
+    
+    # Client-side filter & sort
+    items = []
+    for doc in docs:
+        d = doc.to_dict()
+        if d.get("is_active", True):
+            items.append({
+                "id": doc.id,
+                "name_th": d.get("name_th"),
+                "name_en": d.get("name_en"),
+                "description": d.get("description"),
+                "icon": d.get("icon")
+            })
+    items.sort(key=lambda x: 0)
+    return items
 
 # ============ Target Audience Functions ============
 
 def get_target_audiences() -> List[dict]:
     db = get_firestore_client()
-    docs = db.collection(COL_AUDIENCES)\
-             .where("is_active", "==", True)\
-             .order_by("order_num")\
-             .stream()
-             
-    return [
-        {
-            "id": doc.id,
-            "name_th": d.get("name_th"),
-            "name_en": d.get("name_en"),
-            "age_range": d.get("age_range"),
-            "description": d.get("description")
-        }
-        for doc in docs for d in [doc.to_dict()]
-    ]
+    docs = list(db.collection(COL_AUDIENCES).stream())
+    
+    # Client-side filter & sort
+    items = []
+    for doc in docs:
+        d = doc.to_dict()
+        if d.get("is_active", True):
+            items.append({
+                "id": doc.id,
+                "name_th": d.get("name_th"),
+                "name_en": d.get("name_en"),
+                "age_range": d.get("age_range"),
+                "description": d.get("description")
+            })
+    items.sort(key=lambda x: 0)
+    return items
 
 # ============ Content Goal Functions ============
 
 def get_content_goals() -> List[dict]:
     db = get_firestore_client()
-    docs = db.collection(COL_GOALS)\
-             .where("is_active", "==", True)\
-             .order_by("order_num")\
-             .stream()
-             
-    return [
-        {
-            "id": doc.id,
-            "name_th": d.get("name_th"),
-            "name_en": d.get("name_en"),
-            "description": d.get("description"),
-            "icon": d.get("icon"),
-            "prompt_hint": d.get("prompt_hint")
-        }
-        for doc in docs for d in [doc.to_dict()]
-    ]
+    docs = list(db.collection(COL_GOALS).stream())
+    
+    # Client-side filter & sort
+    items = []
+    for doc in docs:
+        d = doc.to_dict()
+        if d.get("is_active", True):
+            items.append({
+                "id": doc.id,
+                "name_th": d.get("name_th"),
+                "name_en": d.get("name_en"),
+                "description": d.get("description"),
+                "icon": d.get("icon"),
+                "prompt_hint": d.get("prompt_hint")
+            })
+    items.sort(key=lambda x: 0)
+    return items
 
 # ============ Aliases ============
 
