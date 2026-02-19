@@ -1,15 +1,26 @@
 """
 Clipboard Utilities
 Cross-platform clipboard functionality for Streamlit
+
+Problem: navigator.clipboard API requires HTTPS + secure context.
+         Streamlit components.html() runs inside sandboxed iframes
+         that block clipboard access in most browsers.
+
+Solution: Use Streamlit's native st.code() which has a built-in copy
+           button that works reliably, plus st.download_button() as
+           a universal fallback that always works.
 """
+import streamlit as st
 import streamlit.components.v1 as components
-import json
 
 
 def copy_to_clipboard(text: str, key: str) -> bool:
     """
-    Copy text to clipboard using JavaScript
-    Works on both HTTP and HTTPS (with fallback)
+    Display text with copy functionality using multiple reliable methods.
+    
+    Strategy:
+    1. st.code() — has a built-in copy button (works on HTTPS)
+    2. Download button — always works as a fallback
     
     Args:
         text: Text to copy
@@ -18,73 +29,36 @@ def copy_to_clipboard(text: str, key: str) -> bool:
     Returns:
         True if component was rendered
     """
-    # Escape text properly for JavaScript string
-    json_escaped = json.dumps(text)
+    if not text:
+        st.warning("ไม่มีข้อความให้คัดลอก")
+        return False
     
-    # JavaScript to copy to clipboard with robust fallback
-    js_code = f"""
-        <script>
-        (function() {{
-            const textToCopy = {json_escaped};
-            
-            function fallbackCopy(text) {{
-                // Create a hidden textarea
-                const ta = document.createElement('textarea');
-                ta.value = text;
-                ta.style.position = 'fixed';
-                ta.style.left = '-9999px';
-                ta.style.top = '0';
-                ta.style.opacity = '0';
-                ta.style.zIndex = '9999';
-                document.body.appendChild(ta);
-                ta.focus();
-                ta.select();
-                
-                try {{
-                    const successful = document.execCommand('copy');
-                    if (successful) {{
-                        showSuccess();
-                    }} else {{
-                        showError();
-                    }}
-                }} catch (err) {{
-                    showError();
-                }}
-                
-                document.body.removeChild(ta);
-            }}
-            
-            function showSuccess() {{
-                const msg = document.getElementById('copy-msg-{key}');
-                if (msg) {{
-                    msg.innerHTML = '✅ คัดลอกแล้ว!';
-                    msg.style.color = '#00c853';
-                    msg.style.fontWeight = 'bold';
-                }}
-            }}
-            
-            function showError() {{
-                const msg = document.getElementById('copy-msg-{key}');
-                if (msg) {{
-                    msg.innerHTML = '⚠️ กรุณาเลือกข้อความและกด Ctrl+C';
-                    msg.style.color = '#ff9800';
-                }}
-            }}
-            
-            // Try modern clipboard API first (requires HTTPS or localhost)
-            if (navigator.clipboard && window.isSecureContext) {{
-                navigator.clipboard.writeText(textToCopy)
-                    .then(showSuccess)
-                    .catch(() => fallbackCopy(textToCopy));
-            }} else {{
-                // Use fallback for non-secure contexts (HTTP)
-                fallbackCopy(textToCopy);
-            }}
-        }})();
-        </script>
-        <div id="copy-msg-{key}" style="color: #888; font-size: 14px; margin-top: 5px; padding: 5px; border-radius: 4px; background: #f0f0f0;">⏳ กำลังคัดลอก...</div>
-    """
+    # Method 1: st.code() has a built-in copy icon button (top-right corner)
+    # This uses Streamlit's native clipboard integration which works on HTTPS
+    st.code(text, language=None)
     
-    # Increase height to 60px for better visibility
-    components.html(js_code, height=60)
+    # Method 2: Download as .txt fallback — always works regardless of browser/HTTPS
+    st.download_button(
+        "💾 ดาวน์โหลดเป็นไฟล์ .txt",
+        data=text,
+        file_name=f"{key}.txt",
+        mime="text/plain",
+        key=f"dl_{key}",
+        use_container_width=True,
+    )
+    
     return True
+
+
+def copy_code_block(text: str, label: str = "") -> None:
+    """
+    Show text in a code block with built-in copy button.
+    Simpler version — just st.code() with optional label.
+    
+    Args:
+        text: Text to display
+        label: Optional label above the code block
+    """
+    if label:
+        st.caption(label)
+    st.code(text or "(ว่าง)", language=None)

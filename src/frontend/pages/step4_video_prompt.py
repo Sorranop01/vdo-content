@@ -285,11 +285,30 @@ def render():
                             "target_audience": getattr(project, 'target_audience', ''),
                         }
                         
-                        scenes = prompt_gen.generate_all_prompts(
+                        # Progress tracking
+                        progress_bar = st.progress(0.0)
+                        status_text = st.empty()
+                        
+                        generated_scenes = []
+                        
+                        # Use generator for progress updates
+                        generator = prompt_gen.generate_all_prompts_generator(
                             scenes,
                             project.character_reference,
                             project_context
                         )
+                        
+                        for idx, total, scene in generator:
+                            percentage = idx / total
+                            progress_bar.progress(min(percentage, 1.0))
+                            status_text.text(f"⏳ กำลังสร้างฉากที่ {idx}/{total} ({project_context.get('video_type', '')})...")
+                            generated_scenes.append(scene)
+                        
+                        # Clear progress indicators
+                        status_text.empty()
+                        progress_bar.empty()
+                        
+                        scenes = generated_scenes
                         
                         project.scenes = scenes
                         st.session_state.current_project = project
@@ -333,6 +352,7 @@ def render():
         with col_export2:
             if st.button("📋 คัดลอกทั้งหมด", use_container_width=True):
                 copy_to_clipboard(prompts_text, "all_prompts")
+                st.toast("💡 กดไอคอน 📋 มุมขวาบนของกล่องข้อความ หรือกดดาวน์โหลด", icon="💡")
         
         with col_export3:
             completed = sum(1 for s in project.scenes if s.video_generated)
@@ -385,8 +405,12 @@ def render():
                         st.caption("สไตล์วีดีโอ · โทนสี · สิ่งที่วีดีโอสื่อ")
                         if scene.veo_prompt:
                             st.code(scene.veo_prompt, language="text")
-                            if st.button("📋 คัดลอก Video Style", key=f"copy_veo_{scene.order}", use_container_width=True):
-                                copy_to_clipboard(scene.veo_prompt, f"veo_{scene.order}")
+                            col_copy, col_dl = st.columns(2)
+                            with col_copy:
+                                if st.button("📋 คัดลอก Video Style", key=f"copy_veo_{scene.order}", use_container_width=True):
+                                    copy_to_clipboard(scene.veo_prompt, f"veo_{scene.order}")
+                            with col_dl:
+                                st.download_button("💾 ดาวน์โหลด", data=scene.veo_prompt, file_name=f"scene{scene.order}_video_style.txt", mime="text/plain", key=f"dl_veo_{scene.order}", use_container_width=True)
                         else:
                             st.warning("ยังไม่มี Video Style Prompt")
                     
@@ -396,8 +420,12 @@ def render():
                         st.caption("บทพากย์เสียงภาษาไทย · อ่านตรงๆ ไม่มีอิโมชัน")
                         if scene.voiceover_prompt:
                             st.success(scene.voiceover_prompt)
-                            if st.button("📋 คัดลอก เสียงพากย์", key=f"copy_vo_{scene.order}", use_container_width=True):
-                                copy_to_clipboard(scene.voiceover_prompt, f"vo_{scene.order}")
+                            col_copy, col_dl = st.columns(2)
+                            with col_copy:
+                                if st.button("📋 คัดลอก เสียงพากย์", key=f"copy_vo_{scene.order}", use_container_width=True):
+                                    copy_to_clipboard(scene.voiceover_prompt, f"vo_{scene.order}")
+                            with col_dl:
+                                st.download_button("💾 ดาวน์โหลด", data=scene.voiceover_prompt, file_name=f"scene{scene.order}_voiceover.txt", mime="text/plain", key=f"dl_vo_{scene.order}", use_container_width=True)
                         else:
                             st.warning("ยังไม่มีเสียงพากย์")
                     
@@ -407,8 +435,12 @@ def render():
                         st.caption("Voice direction ภาษาอังกฤษ · Tone, Pacing, Emotion")
                         if scene.voice_tone:
                             st.code(scene.voice_tone, language="text")
-                            if st.button("📋 คัดลอก Speaking Style", key=f"copy_tone_{scene.order}", use_container_width=True):
-                                copy_to_clipboard(scene.voice_tone, f"tone_{scene.order}")
+                            col_copy, col_dl = st.columns(2)
+                            with col_copy:
+                                if st.button("📋 คัดลอก Speaking Style", key=f"copy_tone_{scene.order}", use_container_width=True):
+                                    copy_to_clipboard(scene.voice_tone, f"tone_{scene.order}")
+                            with col_dl:
+                                st.download_button("💾 ดาวน์โหลด", data=scene.voice_tone, file_name=f"scene{scene.order}_speaking_style.txt", mime="text/plain", key=f"dl_tone_{scene.order}", use_container_width=True)
                         else:
                             st.warning("ยังไม่มี Speaking Style")
                     
@@ -428,12 +460,16 @@ def render():
                         if scene.voice_tone:
                             combined_parts.append(f"[🎭 Speaking Style]\n{scene.voice_tone}")
                         
-                        combined_text = "\n\n" + ("-" * 40 + "\n\n").join(combined_parts) if combined_parts else ""
+                        combined_text = "\n\n".join(combined_parts) if combined_parts else ""
                         
                         if combined_text:
                             st.code(combined_text, language="text")
-                            if st.button("📋 คัดลอก Prompt ทั้งหมด", key=f"copy_all_{scene.order}", use_container_width=True):
-                                copy_to_clipboard(combined_text, f"all_{scene.order}")
+                            col_copy, col_dl = st.columns(2)
+                            with col_copy:
+                                if st.button("📋 คัดลอก Prompt ทั้งหมด", key=f"copy_all_{scene.order}", use_container_width=True):
+                                    copy_to_clipboard(combined_text, f"all_{scene.order}")
+                            with col_dl:
+                                st.download_button("💾 ดาวน์โหลด", data=combined_text, file_name=f"scene{scene.order}_full_prompt.txt", mime="text/plain", key=f"dl_all_{scene.order}", use_container_width=True)
                         else:
                             st.warning("ยังไม่มี Prompt")
         

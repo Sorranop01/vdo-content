@@ -420,17 +420,35 @@ def render():
         )
         project.style_instructions = style_box
         
-        # Copy Style button
+        # Copy sections with reliable copy buttons
         col_copy_style, col_copy_script = st.columns(2)
         with col_copy_style:
+            st.markdown("**🎭 Style Instructions:**")
             st.code(style_box, language=None)
-            st.caption("👆 เลือก copy ข้อความด้านบน")
+            st.download_button(
+                "💾 ดาวน์โหลด Style",
+                data=style_box,
+                file_name="style_instructions.txt",
+                mime="text/plain",
+                key="dl_style",
+                use_container_width=True,
+            )
         
         # Script preview with copy — ONLY spoken narration (strip stage directions)
         with col_copy_script:
             vo_text = extract_voiceover_text(script_text)
+            st.markdown("**📝 บทพูด (Voiceover):**")
             st.code(vo_text or "(ยังไม่มีบทพูด)", language=None)
-            st.caption("👆 เลือก copy บทพูดด้านบน")
+            st.download_button(
+                "💾 ดาวน์โหลดบทพูด",
+                data=vo_text or "",
+                file_name="voiceover_script.txt",
+                mime="text/plain",
+                key="dl_script",
+                use_container_width=True,
+            )
+        
+        st.caption("💡 **วิธี Copy:** กดไอคอน 📋 ที่มุมขวาบนของกล่องข้อความ หรือกดปุ่มดาวน์โหลด")
         
         # Action buttons
         st.markdown("---")

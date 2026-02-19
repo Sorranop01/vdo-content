@@ -3,7 +3,7 @@ Frontend Utilities
 """
 from .session_state import init_session_state, reset_session_for_project
 from .user_config import load_user_config, save_user_config, UserConfig
-from .clipboard import copy_to_clipboard
+from .clipboard import copy_to_clipboard, copy_code_block
 from .draft_manager import save_draft_to_db, load_draft_from_db, clear_draft_from_db, clear_draft_state
 from .ui_helpers import (
     show_back_button, 
