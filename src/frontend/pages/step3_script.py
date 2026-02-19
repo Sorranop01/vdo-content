@@ -280,14 +280,30 @@ def render():
     st.subheader("🎭 A. บุคลิกน้ำเสียง")
     
     personality_options = {p[0]: p[1] for p in VOICE_PERSONALITIES}
+    # Callback to update style instructions when personality changes
+    def _on_personality_change():
+        new_personality = st.session_state.step3_personality
+        project.voice_personality = new_personality
+        
+        # Generate new default style based on selection
+        p_label = personality_options.get(new_personality, 'Warm & Friendly')
+        new_style = f"Tone: {p_label}. Read in a natural, conversational way."
+        
+        project.style_instructions = new_style
+        # Force update the text area widget state
+        st.session_state.step3_style = new_style
+        st.session_state.current_project = project
+        auto_save_project()
+
     selected_personality = st.selectbox(
         "เลือกบุคลิกน้ำเสียง",
         options=list(personality_options.keys()),
         format_func=lambda x: personality_options.get(x, x),
         index=list(personality_options.keys()).index(project.voice_personality) if project.voice_personality in personality_options else 0,
-        key="step3_personality"
+        key="step3_personality",
+        on_change=_on_personality_change
     )
-    project.voice_personality = selected_personality
+    # Handled in callback: project.voice_personality = selected_personality
     
     st.markdown("---")
     
@@ -554,11 +570,11 @@ def render():
             col_model, col_ai = st.columns(2)
             with col_model:
                 whisper_model = st.radio(
-                    "🧠 Whisper Model",
+                    "🧠 Whisper Model (⚠️ ใช้ RAM สูง — แนะนำ Cloud แทน)",
                     options=list(WHISPER_MODELS.keys()),
                     index=0,
                     horizontal=True,
-                    help="tiny: เร็วมาก, small: สมดุล, large-v3: แม่นที่สุด (ต้องใช้ RAM มาก)"
+                    help="tiny: เร็วมาก ใช้ RAM น้อย, small: สมดุล, large-v3: แม่นที่สุด (ต้องใช้ RAM ≥3.5GB)"
                 )
             with col_ai:
                 ai_correct = st.checkbox(
