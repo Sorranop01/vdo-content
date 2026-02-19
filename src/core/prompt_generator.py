@@ -542,13 +542,24 @@ If the narration is about concepts/objects/places, show those WITHOUT a person."
 **🎤 NARRATION (Thai):**
 "{scene.narration_text}"
 
+**📖 SENTENCE-BY-SENTENCE VISUAL PLAN:**
+Before writing, analyze EACH sentence/clause in the narration above.
+For EVERY sentence, identify what SPECIFIC visual action, object, or gesture represents it.
+Your final prompt MUST include a visual element for EACH sentence — do NOT skip any.
+If a sentence is abstract (e.g. about feelings/concepts), translate it into a CONCRETE, filmable visual:
+- "success" → person climbing stairs reaching the top
+- "happiness" → bright smile, open arms, warm golden light
+- "time passing" → calendar pages flipping, clock hands moving
+- "learning" → person taking notes, pointing at whiteboard
+
 **🚫 ABSOLUTE RULES:**
 1. ENGLISH ONLY - NO THAI CHARACTERS ALLOWED in your response!
 2. LITERAL TRANSLATION - Describe EXACTLY what the narration says, NOT what you think makes sense
 3. If narration mentions a NUMBER → SHOW that number visually
 4. If narration mentions a TIME PERIOD → SHOW calendar/clock
 5. If narration mentions an OBJECT → SHOW that object
-{"6. NO PEOPLE — Do not include any person, character, hands, or body parts" if video_type == "no_person" else ""}
+6. EVERY narration sentence MUST have a corresponding visual element in your prompt
+{"7. NO PEOPLE — Do not include any person, character, hands, or body parts" if video_type == "no_person" else ""}
 
 **📝 YOUR TASK:**
 1. {"Describe OBJECTS/ENVIRONMENT that represent the narration" if video_type == "no_person" else "START with the EXACT character description from Character Lock"}
@@ -556,8 +567,9 @@ If the narration is about concepts/objects/places, show those WITHOUT a person."
 3. ADD specific props that visualize the content (calendar, scale, food, etc.)
 4. DESCRIBE setting, lighting, camera movement
 5. END with quality tags
+6. VERIFY: Does your prompt cover ALL sentences from the narration? If not, add the missing visuals.
 
-**OUTPUT FORMAT (English only, minimum 50 words, NO THAI TEXT, describe 8 seconds of continuous action):**
+**OUTPUT FORMAT (English only, minimum 80 words, NO THAI TEXT, describe 8 seconds of continuous action):**
 "{"[MAIN SUBJECT/OBJECT]" if video_type == "no_person" else "[CHARACTER]"}, [SPECIFIC ACTION with mentioned objects/props], [SETTING], [LIGHTING], [CAMERA: {scene.camera_movement or 'medium shot'}], cinematic quality, photorealistic."
 
 Now write the prompt (ENGLISH ONLY):"""
@@ -570,8 +582,8 @@ Now write the prompt (ENGLISH ONLY):"""
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.15,  # Very low for maximum consistency between scenes
-                max_tokens=600  # Increased for richer, more detailed prompts
+                temperature=0.25,  # Balanced: creative visuals while maintaining consistency
+                max_tokens=900  # High enough for detailed, sentence-covering prompts
             )
             
             prompt = response.choices[0].message.content.strip()
@@ -649,18 +661,26 @@ CHECKLIST:
 1. NO DIALOGUE: Remove any "person saying..." or quoted text.
 2. VISUALS ONLY: Ensure gestures/expressions match the narration context.
 3. ENGLISH ONLY: Remove any accidental Thai text.
-4. SPECIFICITY: Replace vague words (thing, stuff) with specific descriptions.
+4. SPECIFICITY: Replace vague words (thing, stuff, something) with specific visual descriptions.
 5. GLITCH PREVENTION: Remove complex text overlays or logos descriptions.
+6. SENTENCE COVERAGE: Every sentence in the narration must be represented by a specific visual element. If a sentence is missing visual representation, ADD one.
+7. CONCRETENESS: Replace abstract concepts with tangible, filmable visuals. e.g. "success" → "person climbing stairs reaching the top", "change" → "before-and-after comparison with visual transformation".
 
 Input: Use the provided draft prompt.
 Output: Only the polished, corrected English prompt. NO explanations."""
 
+        # Count narration sentences for coverage guidance
+        narration_sentences = [s.strip() for s in scene.narration_text.replace('\n', ' ').split(' ') if s.strip()]
+        sentence_count = max(len(narration_sentences), 1)
+
         user_prompt = f"""DRAFT PROMPT:
 {prompt}
 
-CONTEXT (Narration):
+CONTEXT (Narration — {sentence_count} segments to cover visually):
 "{scene.narration_text}"
 
+Verify that the prompt has a visual element for EACH part of the narration.
+If any narration content is missing from the visual description, ADD it.
 Refine this prompt for Maximum Accuracy and Visual Clarity:"""
 
         try:
@@ -671,7 +691,7 @@ Refine this prompt for Maximum Accuracy and Visual Clarity:"""
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.1, 
-                max_tokens=600
+                max_tokens=900
             )
             result = response.choices[0].message.content.strip()
             
@@ -776,6 +796,7 @@ Quality Criteria:
 4. Lighting - Light and mood description?
 5. Camera - Camera angle/movement?
 6. Quality - Quality tags present?
+7. Narration Coverage - Does the prompt visually represent ALL key concepts from the narration? Every sentence should have a corresponding visual element.
 
 Veo 3 Rules:
 - No text overlays, logos, watermarks
@@ -793,6 +814,8 @@ Prompt: {prompt}
 Context from Thai narration:
 {scene.narration_text}
 
+Check: Does the prompt cover ALL sentences/concepts from the narration above?
+If any narration content is missing visually, add it.
 Respond with only PASS: or IMPROVED: followed by the prompt"""
 
         try:
@@ -803,7 +826,7 @@ Respond with only PASS: or IMPROVED: followed by the prompt"""
                     {"role": "user", "content": qa_user_prompt}
                 ],
                 temperature=0.2,  # Lower temperature for more consistent QA
-                max_tokens=600
+                max_tokens=900
             )
             
             result = response.choices[0].message.content.strip()
@@ -1747,6 +1770,117 @@ Reply JSON:
                 previous_scene_summary = self._summarize_prompt(scene.veo_prompt)
         
         return scenes
+    
+    def generate_all_prompts_generator(
+        self,
+        scenes: list[Scene],
+        character: Optional[str] = None,
+        project_context: dict = None
+    ):
+        """
+        Generator version of generate_all_prompts that yields progress
+        Yields: (current_index, total_scenes, current_scene_object)
+        """
+        theme = project_context.get("visual_theme", "") if project_context else ""
+        note = project_context.get("directors_note", "") if project_context else ""
+        ratio = project_context.get("aspect_ratio", "16:9") if project_context else "16:9"
+        direction_style = project_context.get("direction_style") if project_context else None
+        prompt_style_config = project_context.get("prompt_style_config") if project_context else None
+        video_type = project_context.get("video_type", "with_person") if project_context else "with_person"
+        
+        # === NEW: Platform & Content Context Injection ===
+        platforms = project_context.get("platforms", []) if project_context else []
+        topic = project_context.get("topic", "") if project_context else ""
+        content_category = project_context.get("content_category", "") if project_context else ""
+        video_format = project_context.get("video_format", "") if project_context else ""
+        content_goal = project_context.get("content_goal", "") if project_context else ""
+        target_audience = project_context.get("target_audience", "") if project_context else ""
+        
+        # Build platform-aware director's note
+        platform_instructions = self._build_platform_instructions(platforms, video_format)
+        content_context = self._build_content_context(topic, content_category, content_goal, target_audience)
+        
+        # Enrich director's note with platform and content context
+        enriched_note_parts = []
+        if note:
+            enriched_note_parts.append(note)
+        if platform_instructions:
+            enriched_note_parts.append(platform_instructions)
+        if content_context:
+            enriched_note_parts.append(content_context)
+        enriched_note = "\n\n".join(enriched_note_parts) if enriched_note_parts else ""
+        
+        logger.info(f"Platform context: {platforms}, video_format: {video_format}")
+        
+        # Build platform hint string for voiceover and voice_tone
+        platform_names = []
+        for p in platforms:
+            pdata = self.PLATFORM_STYLE_MAP.get(p)
+            if pdata:
+                platform_names.append(f"{pdata['name']} ({pdata['style']})")
+        platform_hint = ", ".join(platform_names) if platform_names else ""
+        
+        total_scenes = len(scenes)
+        previous_scene_summary = ""
+        
+        # Generate script summary for narrative arc awareness
+        logger.info(f"Generating script summary for {total_scenes} scenes (video_type={video_type})...")
+        script_summary = self._generate_script_summary(scenes)
+        
+        for i, scene in enumerate(scenes):
+            scene_number = i + 1
+            logger.info(f"Generating prompt for scene {scene_number}/{total_scenes}...")
+            
+            # Get previous and next narration for story continuity
+            previous_narration = scenes[i - 1].narration_text if i > 0 else ""
+            next_narration = scenes[i + 1].narration_text if i < total_scenes - 1 else ""
+            
+            # Generate with full context
+            scene.veo_prompt = self.generate_prompt(
+                scene=scene,
+                character_override=character,
+                visual_theme=theme,
+                directors_note=enriched_note,
+                aspect_ratio=ratio,
+                scene_number=scene_number,
+                total_scenes=total_scenes,
+                previous_scene_summary=previous_scene_summary,
+                direction_style_id=direction_style,
+                prompt_style_config=prompt_style_config,
+                video_type=video_type,
+                previous_narration=previous_narration,
+                next_narration=next_narration,
+                script_summary=script_summary
+            )
+            
+            # Generate Thai voiceover text — gender-adapted
+            scene.voiceover_prompt = self.generate_voiceover_prompt(
+                scene=scene,
+                scene_number=scene_number,
+                total_scenes=total_scenes,
+                visual_theme=theme,
+                character_reference=character or "",
+                veo_prompt=scene.veo_prompt,
+                video_type=video_type,
+                platform_hint=platform_hint
+            )
+            
+            # Generate English voice tone direction — COHERENT with video & character
+            scene.voice_tone = self.generate_voice_tone(
+                scene=scene,
+                scene_number=scene_number,
+                total_scenes=total_scenes,
+                visual_theme=theme,
+                veo_prompt=scene.veo_prompt,
+                character_reference=character or "",
+                platform_hint=platform_hint
+            )
+            
+            # Store properly summarized prompt for next iteration
+            if scene.veo_prompt:
+                previous_scene_summary = self._summarize_prompt(scene.veo_prompt)
+            
+            yield scene_number, total_scenes, scene
     
     def detect_emotion(self, narration: str) -> str:
         """
