@@ -1008,38 +1008,16 @@ Respond with only PASS: or IMPROVED: followed by the prompt"""
         platform_hint: str = ""
     ) -> str:
         """
-        Generate coherent Thai voiceover text using AI analysis.
+        Return the original Thai narration text as-is for voiceover.
         
-        AI reads ALL reference data (character, video prompt, context) and
-        produces narration that is coherent with the video subject.
-        No hardcoded rules — AI handles all adaptation.
+        Previously this ran through AI adaptation (gender/pronoun correction),
+        but that caused the voiceover text to diverge from the actual audio clips.
+        Now returns the original transcription text to keep audio and text in sync.
         """
         if not scene.narration_text:
             return ""
         
-        text = scene.narration_text.strip()
-        
-        # If no reference data at all, return as-is (nothing to analyze)
-        if not character_reference and not veo_prompt:
-            return text
-        
-        # If AI is not available, return as-is (can't analyze without AI)
-        if not self.is_available():
-            return text
-        
-        initial_voiceover = self._generate_ai_voiceover(
-            text, character_reference, veo_prompt, visual_theme,
-            video_type, scene_number, total_scenes, scene,
-            platform_hint=platform_hint
-        )
-        
-        # 2. Voiceover Refinement Loop (DeepSeek Correction)
-        # "Measure twice, cut once" - ensure gender and tone match perfectly
-        refined_voiceover = self._refine_voiceover_ai(
-            initial_voiceover, character_reference, video_type
-        )
-        
-        return refined_voiceover
+        return scene.narration_text.strip()
     
     def _generate_ai_voiceover(
         self,
