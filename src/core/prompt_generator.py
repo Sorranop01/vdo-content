@@ -413,6 +413,128 @@ You will receive the VIDEO STYLE PROMPT for this scene. Your speaking style MUST
         else:
             return self._generate_fallback_prompt(scene, character_override, video_type)
     
+    def _analyze_narration(self, narration_text: str, video_type: str) -> Optional[dict]:
+        """
+        Stage 1 of Two-Stage Pipeline: Analyze Thai narration into structured visual plan.
+        
+        Translates Thai → English and extracts visual beats, emotion, key objects.
+        Returns None on ANY failure so caller can fall back to single-stage behavior.
+        """
+        if not self.is_available() or not narration_text.strip():
+            return None
+        
+        system_prompt = """You are a Thai-to-English Visual Analyst for video production.
+Your job is to analyze Thai narration and output a STRUCTURED visual plan.
+
+You MUST respond in this EXACT format (no extra text):
+
+TRANSLATION: [Full English translation of the Thai narration]
+EMOTION: [One word: hopeful/energetic/calm/serious/happy/sad/neutral/urgent/inspiring]
+KEY_OBJECTS: [Comma-separated list of physical objects mentioned or implied]
+KEY_NUMBERS: [Comma-separated numbers mentioned, or "none"]
+BEAT_1: [Thai phrase] | [Concrete visual description in English]
+BEAT_2: [Thai phrase] | [Concrete visual description in English]
+BEAT_3: [Thai phrase] | [Concrete visual description in English]
+(continue for all meaningful phrases)
+
+Rules:
+- Every visual description must be CONCRETE and FILMABLE (no abstract concepts)
+- Translate abstract ideas into physical visuals: "success" → "person reaching mountain summit"
+- Include specific props, colors, and actions
+- Each beat should be 5-15 words of visual description
+- Minimum 2 beats, maximum 6 beats"""
+
+        user_prompt = f"""Analyze this Thai narration for video production:
+
+\"{narration_text}\"
+
+Video type: {video_type}
+Respond in the exact format specified."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,  # Factual analysis, not creative
+                max_tokens=500
+            )
+            
+            result = response.choices[0].message.content.strip()
+            
+            # Parse structured response
+            analysis = {
+                "translation": "",
+                "emotion": "neutral",
+                "key_objects": [],
+                "key_numbers": [],
+                "visual_beats": []
+            }
+            
+            for line in result.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                if line.upper().startswith("TRANSLATION:"):
+                    analysis["translation"] = line.split(":", 1)[1].strip()
+                elif line.upper().startswith("EMOTION:"):
+                    analysis["emotion"] = line.split(":", 1)[1].strip().lower()
+                elif line.upper().startswith("KEY_OBJECTS:"):
+                    raw = line.split(":", 1)[1].strip()
+                    analysis["key_objects"] = [o.strip() for o in raw.split(",") if o.strip()]
+                elif line.upper().startswith("KEY_NUMBERS:"):
+                    raw = line.split(":", 1)[1].strip()
+                    if raw.lower() != "none":
+                        analysis["key_numbers"] = [n.strip() for n in raw.split(",") if n.strip()]
+                elif line.upper().startswith("BEAT_"):
+                    # Format: BEAT_N: Thai phrase | English visual
+                    content = line.split(":", 1)[1].strip() if ":" in line else ""
+                    if "|" in content:
+                        thai_part, visual_part = content.split("|", 1)
+                        analysis["visual_beats"].append({
+                            "thai": thai_part.strip(),
+                            "visual": visual_part.strip()
+                        })
+            
+            # Validate: must have translation and at least 1 beat
+            if not analysis["translation"] or len(analysis["visual_beats"]) == 0:
+                logger.warning("Stage 1 analysis incomplete, falling back to single-stage")
+                return None
+            
+            logger.info(f"Stage 1 analysis: {len(analysis['visual_beats'])} beats, emotion={analysis['emotion']}")
+            return analysis
+            
+        except Exception as e:
+            logger.warning(f"Stage 1 narration analysis failed (safe fallback): {e}")
+            return None
+    
+    def _format_narration_analysis(self, analysis: dict) -> str:
+        """
+        Format Stage 1 analysis into a prompt-injectable section.
+        """
+        lines = ["**🔬 PRE-ANALYZED NARRATION (use this as your visual blueprint):**"]
+        lines.append(f'English meaning: "{analysis["translation"]}"')
+        lines.append(f'Emotion/Tone: {analysis["emotion"]}')
+        
+        if analysis["key_objects"]:
+            lines.append(f'Key objects to show: {", ".join(analysis["key_objects"])}')
+        
+        if analysis["key_numbers"]:
+            lines.append(f'Numbers to show visually: {", ".join(analysis["key_numbers"])}')
+        
+        lines.append("")
+        lines.append("Visual beats to cover (EACH must appear in your prompt):")
+        for i, beat in enumerate(analysis["visual_beats"], 1):
+            lines.append(f'  {i}. "{beat["thai"]}" → {beat["visual"]}')
+        
+        lines.append("")
+        lines.append("→ Your prompt MUST include a visual for EVERY beat listed above.")
+        
+        return "\n".join(lines)
+    
     def _generate_ai_prompt(
         self,
         scene: Scene,
@@ -513,6 +635,10 @@ If the narration is about concepts/objects/places, show those WITHOUT a person."
 {character if character else "A Thai person in casual modern clothing"}
 ↑ COPY THIS DESCRIPTION WORD-FOR-WORD at the start of your prompt. Do NOT change ethnicity, age, or clothing!"""
         
+        # === STAGE 1: Narration Analysis (fail-safe) ===
+        narration_analysis = self._analyze_narration(scene.narration_text, video_type)
+        analysis_section = self._format_narration_analysis(narration_analysis) if narration_analysis else ""
+        
         user_prompt = f"""**🎯 MISSION:** Create a Veo 3 video prompt that LITERALLY shows what the narration says.
 
 {direction_instructions}
@@ -542,11 +668,11 @@ If the narration is about concepts/objects/places, show those WITHOUT a person."
 **🎤 NARRATION (Thai):**
 "{scene.narration_text}"
 
-**📖 SENTENCE-BY-SENTENCE VISUAL PLAN:**
-Before writing, analyze EACH sentence/clause in the narration above.
-For EVERY sentence, identify what SPECIFIC visual action, object, or gesture represents it.
-Your final prompt MUST include a visual element for EACH sentence — do NOT skip any.
-If a sentence is abstract (e.g. about feelings/concepts), translate it into a CONCRETE, filmable visual:
+{analysis_section}
+
+**📖 VISUAL PLAN INSTRUCTIONS:**
+{"Use the PRE-ANALYZED NARRATION above as your visual blueprint. Your final prompt MUST include a visual for EVERY beat listed. Do NOT skip any beat." if narration_analysis else "Before writing, analyze EACH sentence/clause in the narration above. For EVERY sentence, identify what SPECIFIC visual action, object, or gesture represents it. Your final prompt MUST include a visual element for EACH sentence — do NOT skip any."}
+If a concept is abstract, translate it into a CONCRETE, filmable visual:
 - "success" → person climbing stairs reaching the top
 - "happiness" → bright smile, open arms, warm golden light
 - "time passing" → calendar pages flipping, clock hands moving
