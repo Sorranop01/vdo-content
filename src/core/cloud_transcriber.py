@@ -47,7 +47,8 @@ class CloudTranscriber:
         result = transcriber.transcribe_with_summary("audio.mp3", language="th")
     """
     
-    MAX_SEGMENT_DURATION = 8.0  # Match local transcriber
+    MAX_SEGMENT_DURATION = 8.0  # Match local transcriber (hard ceiling)
+    MIN_SEGMENT_DURATION = 7.0  # Target minimum — start looking for break points here
     
     def __init__(
         self,
@@ -148,7 +149,7 @@ class CloudTranscriber:
         # Parse response into TranscriptSegments
         segments = self._parse_groq_response(data)
         
-        # Optimize for scenes (≤8s per segment)
+        # Optimize for scenes (target 7-8s per segment)
         return self._optimize_for_scenes(segments)
     
     def _parse_groq_response(self, data: dict) -> list[TranscriptSegment]:
@@ -194,8 +195,15 @@ class CloudTranscriber:
         segments: list[TranscriptSegment]
     ) -> list[TranscriptSegment]:
         """
-        Optimize segments for Veo 3 (max 8 seconds each).
+        Optimize segments for Veo 3 (target 7-8 seconds each).
         Same logic as local AudioTranscriber.
+        
+        Strategy (3 phases):
+        1. ACCUMULATE: Keep adding words while duration < 7s (MIN)
+        2. SWEET ZONE (7-8s): Proactively look for natural Thai break points
+        3. HARD CUT (>8s): Force-cut at 8s ceiling if no break found
+        
+        Final merge pass combines trailing short segment (<7s) into predecessor.
         """
         if not segments:
             return []
@@ -215,10 +223,33 @@ class CloudTranscriber:
         if not all_words:
             return segments
         
-        # Group words into scenes respecting 8s limit
+        # Natural break indicators for Thai speech
         THAI_BREAK_PARTICLES = ('ครับ', 'ค่ะ', 'นะ', 'เลย', 'ด้วย', 'แล้ว')
         
-        optimized = []
+        def _is_natural_break(w_text: str) -> bool:
+            """Check if a word is a natural sentence/clause break point."""
+            stripped = w_text.strip()
+            return (
+                stripped.endswith(THAI_BREAK_PARTICLES)
+                or stripped.endswith((' ', ',', '.', '!', '?', '…'))
+            )
+        
+        def _flush_scene(words: list[WordInfo], start: float) -> TranscriptSegment | None:
+            """Create a TranscriptSegment from accumulated words."""
+            if not words:
+                return None
+            text = "".join(w.word for w in words).strip()
+            if not text:
+                return None
+            return TranscriptSegment(
+                start=round(start, 2),
+                end=round(words[-1].end, 2),
+                text=text,
+                words=list(words),
+            )
+        
+        # === Phase 1+2+3: Build segments with 7-8s targeting ===
+        optimized: list[TranscriptSegment] = []
         scene_words: list[WordInfo] = []
         scene_start = all_words[0].start
         
@@ -226,28 +257,37 @@ class CloudTranscriber:
             potential_end = word.end
             potential_duration = potential_end - scene_start
             
-            if potential_duration <= self.MAX_SEGMENT_DURATION:
+            if potential_duration <= self.MIN_SEGMENT_DURATION:
+                # Phase 1: Still under 7s — keep accumulating
                 scene_words.append(word)
+            
+            elif potential_duration <= self.MAX_SEGMENT_DURATION:
+                # Phase 2: SWEET ZONE (7-8s) — add the word, then check for break
+                scene_words.append(word)
+                
+                if _is_natural_break(word.word):
+                    # Great break point found! Flush this scene
+                    seg = _flush_scene(scene_words, scene_start)
+                    if seg:
+                        optimized.append(seg)
+                    scene_words = []
+                    scene_start = word.end  # Next scene starts after this word
+            
             else:
+                # Phase 3: Would EXCEED 8s — must cut before adding this word
                 if scene_words:
+                    # Try to find a natural break in the last few words
                     best_split = len(scene_words)
                     search_start = max(0, len(scene_words) - 5)
                     for j in range(len(scene_words) - 1, search_start - 1, -1):
-                        w_text = scene_words[j].word.strip()
-                        if w_text.endswith(tuple(THAI_BREAK_PARTICLES)) or w_text.endswith((' ', ',', '.', '!', '?')):
+                        if _is_natural_break(scene_words[j].word):
                             best_split = j + 1
                             break
                     
                     split_words = scene_words[:best_split]
-                    if split_words:
-                        text = "".join(w.word for w in split_words).strip()
-                        if text:
-                            optimized.append(TranscriptSegment(
-                                start=round(scene_start, 2),
-                                end=round(split_words[-1].end, 2),
-                                text=text,
-                                words=split_words
-                            ))
+                    seg = _flush_scene(split_words, scene_start)
+                    if seg:
+                        optimized.append(seg)
                     
                     remaining = scene_words[best_split:]
                     scene_words = remaining + [word]
@@ -256,16 +296,29 @@ class CloudTranscriber:
                     scene_words = [word]
                     scene_start = word.start
         
-        # Remaining words
+        # Flush remaining words
         if scene_words:
-            text = "".join(w.word for w in scene_words).strip()
-            if text:
-                optimized.append(TranscriptSegment(
-                    start=round(scene_start, 2),
-                    end=round(scene_words[-1].end, 2),
-                    text=text,
-                    words=scene_words
-                ))
+            seg = _flush_scene(scene_words, scene_start)
+            if seg:
+                optimized.append(seg)
+        
+        # === Final merge pass: merge trailing short segment into predecessor ===
+        if len(optimized) >= 2:
+            last = optimized[-1]
+            last_duration = last.end - last.start
+            if last_duration < self.MIN_SEGMENT_DURATION:
+                prev = optimized[-2]
+                merged_duration = last.end - prev.start
+                if merged_duration <= self.MAX_SEGMENT_DURATION + 2.0:
+                    merged_words = (prev.words or []) + (last.words or [])
+                    merged_text = prev.text + last.text
+                    optimized[-2] = TranscriptSegment(
+                        start=prev.start,
+                        end=last.end,
+                        text=merged_text.strip(),
+                        words=merged_words,
+                    )
+                    optimized.pop()
         
         return optimized
     

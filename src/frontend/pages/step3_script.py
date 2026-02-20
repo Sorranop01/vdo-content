@@ -12,29 +12,7 @@ from pathlib import Path
 logger = logging.getLogger("vdo_content.step3")
 
 
-def _check_memory_available(min_gb: float = 1.0) -> tuple[bool, float]:
-    """Check if enough RAM is available for Whisper model loading.
-    
-    Returns:
-        (is_ok, available_gb)
-    """
-    try:
-        import psutil
-        mem = psutil.virtual_memory()
-        available_gb = mem.available / (1024 ** 3)
-        return available_gb >= min_gb, round(available_gb, 1)
-    except ImportError:
-        # psutil not available, try reading /proc/meminfo
-        try:
-            with open('/proc/meminfo', 'r') as f:
-                for line in f:
-                    if line.startswith('MemAvailable:'):
-                        kb = int(line.split()[1])
-                        available_gb = kb / (1024 ** 2)
-                        return available_gb >= min_gb, round(available_gb, 1)
-        except Exception:
-            pass
-    return True, 0.0  # Assume OK if we can't check
+
 
 # Imports
 from src.core.models import AudioSegment
@@ -110,12 +88,7 @@ try:
 except ImportError:
     DB_AVAILABLE = False
 
-# Try import transcription
-try:
-    from src.core.transcriber import AudioTranscriber
-    TRANSCRIPTION_AVAILABLE = True
-except ImportError:
-    TRANSCRIPTION_AVAILABLE = False
+
 
 # Try import AI generators
 try:
@@ -534,219 +507,128 @@ def render():
     if project.audio_path and os.path.exists(project.audio_path):
         st.subheader("✂️ E. ซอยย่อยคลิปเสียง")
         
-        # --- Transcription mode ---
+        # --- Cloud transcription (Groq) ---
         from src.core.cloud_transcriber import CloudTranscriber, GROQ_WHISPER_MODELS
         
         groq_available = CloudTranscriber.is_available()
         
-        mode_options = ["☁️ Cloud (Groq)", "💻 Local (Whisper)"]
-        transcribe_mode = st.radio(
-            "🔧 โหมดถอดเสียง",
-            options=mode_options,
-            index=0 if groq_available else 1,
-            horizontal=True,
-            help="Cloud: ไม่ใช้ RAM เลย, เร็วมาก, ต้องมี internet | Local: ใช้ RAM, ทำงาน offline"
-        )
+        if not groq_available:
+            st.warning(
+                "⚠️ ยังไม่ได้ตั้งค่า `GROQ_API_KEY`\n\n"
+                "1. สมัครฟรีที่ [console.groq.com](https://console.groq.com)\n"
+                "2. ใส่ key ใน `.env` → `GROQ_API_KEY=gsk_xxxx`\n"
+                "3. Restart แอพ"
+            )
         
-        use_cloud = transcribe_mode == mode_options[0]
+        col_cloud_model, col_ai = st.columns(2)
+        with col_cloud_model:
+            cloud_model = st.selectbox(
+                "🧠 Cloud Model",
+                options=list(GROQ_WHISPER_MODELS.keys()),
+                index=0,
+                format_func=lambda x: GROQ_WHISPER_MODELS[x]["name"],
+                help="whisper-large-v3-turbo แนะนำ: เร็ว + แม่นภาษาไทย"
+            )
+        with col_ai:
+            ai_correct = st.checkbox(
+                "✨ ตรวจทานด้วย AI (DeepSeek)",
+                value=True,
+                help="ใช้ LLM แก้คำสะกดผิดหลังถอดเสียง เช่น ตั้งเบาหมาย → ตั้งเป้าหมาย"
+            )
         
-        if use_cloud:
-            # --- Cloud settings ---
-            if not groq_available:
-                st.warning(
-                    "⚠️ ยังไม่ได้ตั้งค่า `GROQ_API_KEY`\n\n"
-                    "1. สมัครฟรีที่ [console.groq.com](https://console.groq.com)\n"
-                    "2. ใส่ key ใน `.env` → `GROQ_API_KEY=gsk_xxxx`\n"
-                    "3. Restart แอพ"
-                )
-            
-            col_cloud_model, col_ai = st.columns(2)
-            with col_cloud_model:
-                cloud_model = st.selectbox(
-                    "🧠 Cloud Model",
-                    options=list(GROQ_WHISPER_MODELS.keys()),
-                    index=0,
-                    format_func=lambda x: GROQ_WHISPER_MODELS[x]["name"],
-                    help="whisper-large-v3-turbo แนะนำ: เร็ว + แม่นภาษาไทย"
-                )
-            with col_ai:
-                ai_correct = st.checkbox(
-                    "✨ ตรวจทานด้วย AI (DeepSeek)",
-                    value=True,
-                    help="ใช้ LLM แก้คำสะกดผิดหลังถอดเสียง เช่น ตั้งเบาหมาย → ตั้งเป้าหมาย"
-                )
-            
-            st.caption(f"{GROQ_WHISPER_MODELS[cloud_model]['desc']}  •  💰 ฟรี (2000 req/วัน)  •  🧠 RAM: 0 GB")
-        else:
-            # --- Local settings ---
-            WHISPER_MODELS = {
-                "tiny": {"ram": 0.5, "label": "tiny", "desc": "🟢 เร็วมาก ใช้ RAM ~0.5GB แต่ภาษาไทยอาจไม่แม่น"},
-                "small": {"ram": 1.5, "label": "small", "desc": "🟡 สมดุล ใช้ RAM ~1.5GB ภาษาไทยพอใช้ได้"},
-                "large-v3": {"ram": 3.5, "label": "large-v3", "desc": "🔴 แม่นมาก ใช้ RAM ~3.5GB ใช้เวลา 2-5 นาที"},
-            }
-            
-            col_model, col_ai = st.columns(2)
-            with col_model:
-                whisper_model = st.radio(
-                    "🧠 Whisper Model (⚠️ ใช้ RAM สูง — แนะนำ Cloud แทน)",
-                    options=list(WHISPER_MODELS.keys()),
-                    index=0,
-                    horizontal=True,
-                    help="tiny: เร็วมาก ใช้ RAM น้อย, small: สมดุล, large-v3: แม่นที่สุด (ต้องใช้ RAM ≥3.5GB)"
-                )
-            with col_ai:
-                ai_correct = st.checkbox(
-                    "✨ ตรวจทานด้วย AI (DeepSeek)",
-                    value=True,
-                    help="ใช้ LLM แก้คำสะกดผิดหลังถอดเสียง เช่น ตั้งเบาหมาย → ตั้งเป้าหมาย",
-                    key="ai_correct_local"
-                )
-            
-            model_info = WHISPER_MODELS[whisper_model]
-            st.caption(model_info["desc"])
-            
-            # Memory check warning
-            mem_ok, available_gb = _check_memory_available(model_info["ram"])
-            if not mem_ok:
-                st.warning(
-                    f"⚠️ RAM ไม่เพียงพอ: ต้องใช้ ~{model_info['ram']}GB แต่มีว่างเพียง {available_gb}GB\n\n"
-                    f"💡 แนะนำให้เปลี่ยนเป็น **☁️ Cloud (Groq)** ไม่ต้องใช้ RAM เลย!"
-                )
+        st.caption(f"{GROQ_WHISPER_MODELS[cloud_model]['desc']}  •  💰 ฟรี (2000 req/วัน)  •  🧠 RAM: 0 GB")
         
         if st.button("🎙️ เริ่มซอยคลิปเสียง", type="primary", use_container_width=True):
-            try:
-                import time
-                
-                # Context prompt for Thai transcription
-                thai_prompt = (
-                    "ประโยคต่อไปนี้เป็นบทพูดภาษาไทยที่ชัดเจน เรื่องราวเกี่ยวกับ "
-                    f"{project.topic or 'เนื้อหาทั่วไป'} "
-                    "สามารถใช้คำทับศัพท์ภาษาอังกฤษได้ตามความเหมาะสม โดยเฉพาะคำเฉพาะทาง เช่น AI, Technology"
-                )
-                
-                if use_cloud:
-                    # ===== CLOUD MODE (Groq) =====
-                    if not groq_available:
-                        st.error("❌ ยังไม่ได้ตั้งค่า GROQ_API_KEY — กรุณาใส่ใน .env ก่อน")
-                    else:
-                        with st.spinner(f"☁️ กำลังส่งไฟล์เสียงไป Groq ({GROQ_WHISPER_MODELS[cloud_model]['name']})..."):
-                            t0 = time.time()
-                            transcriber = CloudTranscriber(model=cloud_model)
-                            result = transcriber.transcribe_with_summary(
-                                project.audio_path,
-                                language="th",
-                                initial_prompt=thai_prompt
-                            )
-                            elapsed = time.time() - t0
-                        
-                        st.toast(f"⚡ ถอดเสียงสำเร็จใน {elapsed:.1f} วินาที!", icon="☁️")
-                        
-                        raw_segments = result["segments"]
-                        model_label = f"☁️ {GROQ_WHISPER_MODELS[cloud_model]['name']}"
-                else:
-                    # ===== LOCAL MODE =====
-                    if not TRANSCRIPTION_AVAILABLE:
-                        st.error("❌ Whisper ยังไม่ติดตั้ง")
-                        st.code("pip install faster-whisper")
-                        raise RuntimeError("faster-whisper not installed")
+            if not groq_available:
+                st.error("❌ ยังไม่ได้ตั้งค่า GROQ_API_KEY — กรุณาใส่ใน .env ก่อน")
+            else:
+                try:
+                    import time
+                    from src.core.transcriber import AudioTranscriber
                     
-                    # Pre-flight memory check
-                    mem_ok, available_gb = _check_memory_available(model_info["ram"])
-                    if not mem_ok:
-                        st.error(
-                            f"❌ RAM ไม่เพียงพอสำหรับโมเดล {whisper_model}\n\n"
-                            f"ต้องใช้ ~{model_info['ram']}GB แต่มีว่างเพียง {available_gb}GB\n\n"
-                            f"💡 **วิธีแก้:** เปลี่ยนเป็น **☁️ Cloud (Groq)** (ใช้ RAM = 0)"
-                        )
-                        raise RuntimeError("Insufficient RAM")
+                    # Context prompt for Thai transcription
+                    thai_prompt = (
+                        "ประโยคต่อไปนี้เป็นบทพูดภาษาไทยที่ชัดเจน เรื่องราวเกี่ยวกับ "
+                        f"{project.topic or 'เนื้อหาทั่วไป'} "
+                        "สามารถใช้คำทับศัพท์ภาษาอังกฤษได้ตามความเหมาะสม โดยเฉพาะคำเฉพาะทาง เช่น AI, Technology"
+                    )
                     
-                    # Load model
-                    progress_placeholder = st.empty()
-                    progress_placeholder.info(f"🔄 กำลังโหลด AI model ({whisper_model})... อาจใช้เวลา 30-120 วินาที")
-                    
-                    t0 = time.time()
-                    try:
-                        transcriber = AudioTranscriber(model_size=whisper_model, device="cpu", compute_type="int8")
-                        _ = transcriber.model
-                        load_time = time.time() - t0
-                        progress_placeholder.success(f"✅ โหลดโมเดลสำเร็จใน {load_time:.0f} วินาที")
-                    except Exception as load_err:
-                        progress_placeholder.empty()
-                        st.error(
-                            f"❌ โหลดโมเดล {whisper_model} ไม่สำเร็จ\n\n"
-                            f"Error: {load_err}\n\n"
-                            f"💡 แนะนำให้เปลี่ยนเป็น **☁️ Cloud (Groq)** แทน"
-                        )
-                        raise
-                    
-                    with st.spinner("🎧 กำลังฟังเสียงและซอยฉาก (≤8 วินาที)..."):
+                    with st.spinner(f"☁️ กำลังส่งไฟล์เสียงไป Groq ({GROQ_WHISPER_MODELS[cloud_model]['name']})..."):
+                        t0 = time.time()
+                        transcriber = CloudTranscriber(model=cloud_model)
                         result = transcriber.transcribe_with_summary(
                             project.audio_path,
                             language="th",
                             initial_prompt=thai_prompt
                         )
+                        elapsed = time.time() - t0
+                    
+                    st.toast(f"⚡ ถอดเสียงสำเร็จใน {elapsed:.1f} วินาที!", icon="☁️")
                     
                     raw_segments = result["segments"]
-                    model_label = f"💻 {whisper_model}"
-                
-                # ===== COMMON: Post-processing =====
-                # LLM Post-Correction (DeepSeek)
-                if ai_correct and raw_segments:
-                    deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
-                    if deepseek_key:
-                        with st.spinner("✨ กำลังตรวจทานคำสะกดด้วย DeepSeek..."):
-                            reference = project.full_script or ""
-                            raw_segments = AudioTranscriber.correct_with_llm(
-                                segments=raw_segments,
-                                reference_script=reference,
-                                api_key=deepseek_key,
-                                provider="deepseek",
-                            )
-                        st.toast("✅ ตรวจทานคำสะกดเสร็จ!", icon="✨")
-                    else:
-                        st.warning("⚠️ ไม่พบ DEEPSEEK_API_KEY — ข้ามขั้นตอนตรวจทาน")
-                
-                # Convert to AudioSegment
-                segments = []
-                for i, seg in enumerate(raw_segments, 1):
-                    segments.append(AudioSegment(
-                        order=i,
-                        start_time=seg.start,
-                        end_time=seg.end,
-                        duration=round(seg.end - seg.start, 2),
-                        text_content=seg.text
-                    ))
-                
-                project.audio_segments = segments
-                project.audio_duration = result["total_duration"]
-                project.full_script = result["full_text"]
-                
-                st.session_state.current_project = project
-                auto_save_project()
-                
-                ai_flag = " + AI ตรวจทาน" if ai_correct else ""
-                st.success(f"✅ ซอยสำเร็จ! ได้ {len(segments)} ฉาก (รวม {result['total_duration']:.1f}s, {model_label}{ai_flag})")
-                st.rerun()
-                
-            except Exception as e:
-                logger.error(f"Audio segmentation failed: {e}", exc_info=True)
-                error_msg = str(e)
-                # Don't show duplicate errors for ones we already displayed
-                if "RAM" not in error_msg and "GROQ_API_KEY" not in error_msg and "โหลดโมเดล" not in error_msg and "not installed" not in error_msg:
-                    st.error(f"❌ ซอยเสียงไม่สำเร็จ: {e}")
-                    st.info(
-                        "💡 **วิธีแก้ที่แนะนำ:**\n"
-                        "1. ลองเปลี่ยนเป็น **☁️ Cloud (Groq)** (ไม่ใช้ RAM)\n"
-                        "2. ตรวจสอบว่าไฟล์เสียงอยู่ในรูปแบบที่รองรับ (.mp3, .wav, .m4a)\n"
-                        "3. ตรวจสอบ internet connection (สำหรับ Cloud mode)"
-                    )
+                    model_label = f"☁️ {GROQ_WHISPER_MODELS[cloud_model]['name']}"
+                    
+                    # LLM Post-Correction (DeepSeek)
+                    if ai_correct and raw_segments:
+                        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
+                        if deepseek_key:
+                            with st.spinner("✨ กำลังตรวจทานคำสะกดด้วย DeepSeek..."):
+                                reference = project.full_script or ""
+                                raw_segments = AudioTranscriber.correct_with_llm(
+                                    segments=raw_segments,
+                                    reference_script=reference,
+                                    api_key=deepseek_key,
+                                    provider="deepseek",
+                                )
+                            st.toast("✅ ตรวจทานคำสะกดเสร็จ!", icon="✨")
+                        else:
+                            st.warning("⚠️ ไม่พบ DEEPSEEK_API_KEY — ข้ามขั้นตอนตรวจทาน")
+                    
+                    # Convert to AudioSegment
+                    segments = []
+                    for i, seg in enumerate(raw_segments, 1):
+                        segments.append(AudioSegment(
+                            order=i,
+                            start_time=seg.start,
+                            end_time=seg.end,
+                            duration=round(seg.end - seg.start, 2),
+                            text_content=seg.text
+                        ))
+                    
+                    project.audio_segments = segments
+                    project.audio_duration = result["total_duration"]
+                    project.full_script = result["full_text"]
+                    
+                    st.session_state.current_project = project
+                    auto_save_project()
+                    
+                    ai_flag = " + AI ตรวจทาน" if ai_correct else ""
+                    st.success(f"✅ ซอยสำเร็จ! ได้ {len(segments)} ฉาก (รวม {result['total_duration']:.1f}s, {model_label}{ai_flag})")
+                    st.rerun()
+                    
+                except Exception as e:
+                    logger.error(f"Audio segmentation failed: {e}", exc_info=True)
+                    error_msg = str(e)
+                    if "GROQ_API_KEY" not in error_msg:
+                        st.error(f"❌ ซอยเสียงไม่สำเร็จ: {e}")
+                        st.info(
+                            "💡 **วิธีแก้ที่แนะนำ:**\n"
+                            "1. ตรวจสอบว่าไฟล์เสียงอยู่ในรูปแบบที่รองรับ (.mp3, .wav, .m4a)\n"
+                            "2. ตรวจสอบ internet connection\n"
+                            "3. ลองกดใหม่อีกครั้ง"
+                        )
         
         # Display segments
         if project.audio_segments:
             st.markdown("**📊 ฉากที่ซอยแล้ว:**")
             
             for i, seg in enumerate(project.audio_segments):
-                status = "🔴" if seg.duration > 8.0 else "🟢"
+                if seg.duration > 8.0:
+                    status = "🔴"
+                elif seg.duration < 7.0:
+                    status = "🟡"
+                else:
+                    status = "🟢"
                 with st.expander(f"{status} ฉาก {seg.order}: {seg.time_range} ({seg.duration:.1f}s)"):
                     col1, col2 = st.columns([3, 1])
                     
@@ -763,6 +645,8 @@ def render():
                         st.metric("Duration", f"{seg.duration:.1f}s")
                         if seg.duration > 8.0:
                             st.warning("⚠️ เกิน 8 วินาที!")
+                        elif seg.duration < 7.0:
+                            st.info("💡 สั้นกว่า 7 วินาที")
     
     st.markdown("---")
     
