@@ -768,7 +768,15 @@ Now write the prompt (ENGLISH ONLY):"""
         # Remove markdown code blocks
         if prompt.startswith("```"):
              prompt = "\n".join(prompt.split("\n")[1:-1])
+             
+        prompt = prompt.strip()
         
+        # Remove surrounding quotes
+        if prompt.startswith('"') and prompt.endswith('"'):
+            prompt = prompt[1:-1]
+        elif prompt.startswith("'") and prompt.endswith("'"):
+            prompt = prompt[1:-1]
+            
         return prompt.strip()
 
     def _refine_prompt_ai(self, prompt: str, scene: Scene, video_type: str) -> str:
