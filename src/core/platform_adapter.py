@@ -8,12 +8,12 @@ from typing import Optional
 
 logger = logging.getLogger("vdo_content.platform_adapter")
 
-# ??? Platform configurations ?????????????????????????????????????????????????
+# --- Platform configurations ---
 
 PLATFORM_CONFIGS = {
     "tiktok": {
         "name": "TikTok",
-        "icon": "??",
+        "icon": "🎵",
         "aspect_ratio": "9:16",
         "max_duration_sec": 8,
         "composition_note": (
@@ -29,7 +29,7 @@ PLATFORM_CONFIGS = {
     },
     "instagram_reels": {
         "name": "Instagram Reels",
-        "icon": "??",
+        "icon": "📸",
         "aspect_ratio": "9:16",
         "max_duration_sec": 8,
         "composition_note": (
@@ -45,7 +45,7 @@ PLATFORM_CONFIGS = {
     },
     "youtube": {
         "name": "YouTube",
-        "icon": "??",
+        "icon": "▶️",
         "aspect_ratio": "16:9",
         "max_duration_sec": 8,
         "composition_note": (
@@ -60,7 +60,7 @@ PLATFORM_CONFIGS = {
     },
     "youtube_shorts": {
         "name": "YouTube Shorts",
-        "icon": "??",
+        "icon": "🔴",
         "aspect_ratio": "9:16",
         "max_duration_sec": 8,
         "composition_note": (
@@ -76,7 +76,7 @@ PLATFORM_CONFIGS = {
     },
     "facebook_reels": {
         "name": "Facebook Reels",
-        "icon": "??",
+        "icon": "📘",
         "aspect_ratio": "9:16",
         "max_duration_sec": 8,
         "composition_note": (

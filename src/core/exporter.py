@@ -23,6 +23,21 @@ class ProjectExporter:
         self.output_base = Path(output_dir)
         self.output_base.mkdir(exist_ok=True)
         
+    def _get_thai_font_path(self) -> str:
+        """Find a suitable Thai font path"""
+        candidates = [
+            "/usr/share/fonts/truetype/tlwg/Loma.ttf",
+            "/usr/share/fonts/truetype/tlwg/Garuda.ttf",
+            "/usr/share/fonts/truetype/tlwg/Waree.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", # Fallback
+        ]
+        
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        return None
+
     def create_scene_card(self, scene: Scene, output_path: str, width: int = 1920, height: int = 1080):
         """Create a placeholder image for the scene with details"""
         # Create dark background
@@ -30,11 +45,16 @@ class ProjectExporter:
         draw = ImageDraw.Draw(img)
         
         # Try to load a font, fallback to default
+        font_path = self._get_thai_font_path()
         try:
-            # Try to find a system font
-            font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 80)
-            font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 40)
-            font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 30)
+            if font_path:
+                font_large = ImageFont.truetype(font_path, 80)
+                font_medium = ImageFont.truetype(font_path, 40)
+                font_small = ImageFont.truetype(font_path, 30)
+            else:
+                font_large = ImageFont.load_default()
+                font_medium = ImageFont.load_default()
+                font_small = ImageFont.load_default()
         except IOError:
             font_large = ImageFont.load_default()
             font_medium = ImageFont.load_default()

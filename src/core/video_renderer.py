@@ -36,22 +36,50 @@ class VideoRenderer:
         path_str = str(path)
         return not any(c in path_str for c in self.FORBIDDEN_CHARS)
         
+    def _get_thai_font_path(self) -> str:
+        """Find a suitable Thai font path"""
+        # Common locations for Thai fonts in Linux/Docker
+        candidates = [
+            "/usr/share/fonts/truetype/tlwg/Loma.ttf",
+            "/usr/share/fonts/truetype/tlwg/Garuda.ttf",
+            "/usr/share/fonts/truetype/tlwg/Waree.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+            "C:/Windows/Fonts/Angsana.ttf",  # Windows fallback
+            "C:/Windows/Fonts/Tahoma.ttf",
+        ]
+        
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        
+        return None
+
     def _create_scene_image(self, text: str, order: int, duration: float, output_path: str):
         """Generate a simple image for the scene"""
         width, height = 1280, 720
         img = Image.new('RGB', (width, height), color=(30, 30, 40))
         draw = ImageDraw.Draw(img)
         
+        font_path = self._get_thai_font_path()
+        font_lg = None
+        font_sm = None
+        
         try:
-            # Use default font if custom font fails
-            font_lg = ImageFont.load_default() 
-            # In a real environment, we'd load a TTF
+            if font_path:
+                # Load Thai font
+                font_lg = ImageFont.truetype(font_path, 40)
+                font_sm = ImageFont.truetype(font_path, 30)
+            else:
+                # Fallback to default
+                font_lg = ImageFont.load_default()
+                font_sm = ImageFont.load_default()
         except Exception:
-            pass  # Font loading is best-effort
+            font_lg = ImageFont.load_default()
+            font_sm = ImageFont.load_default()
             
         # Draw text
-        draw.text((50, 50), f"SCENE {order}", fill=(200, 50, 50))
-        draw.text((50, 100), f"Duration: {duration:.1f}s", fill=(255, 255, 255))
+        draw.text((50, 50), f"SCENE {order}", fill=(200, 50, 50), font=font_lg)
+        draw.text((50, 100), f"Duration: {duration:.1f}s", fill=(255, 255, 255), font=font_sm)
         
         # Word wrap text
         lines = []
@@ -66,8 +94,8 @@ class VideoRenderer:
         
         y = 200
         for line in lines[:10]: # Limit lines
-            draw.text((50, y), line, fill=(200, 200, 200))
-            y += 30
+            draw.text((50, y), line, fill=(200, 200, 200), font=font_sm)
+            y += 40  # Increased line height
             
         img.save(output_path)
 
@@ -300,7 +328,8 @@ class VideoRenderer:
             cmd_mux = ["ffmpeg", "-y", "-i", str(silent_video), "-i", project.audio_path]
             
             # Filter complex construction
-            filter_complex = f"[0:v]subtitles='{abs_srt_path}':force_style='FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,MarginV=30'[v]"
+            # Use 'Loma' font which is available in fonts-thai-tlwg
+            filter_complex = f"[0:v]subtitles='{abs_srt_path}':force_style='FontName=Loma,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,MarginV=30'[v]"
             map_args = ["-map", "[v]"]
             
             if music_path and os.path.exists(music_path):

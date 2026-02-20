@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     nginx \
     gettext-base \
+    fonts-thai-tlwg \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

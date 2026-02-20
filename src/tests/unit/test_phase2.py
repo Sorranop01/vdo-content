@@ -38,7 +38,7 @@ class TestLLMConfig:
         from core.llm_config import get_provider_choices
         
         choices = get_provider_choices()
-        assert len(choices) == 4
+        assert len(choices) == 6
         assert all(isinstance(c, tuple) for c in choices)
 
 
