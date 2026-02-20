@@ -683,7 +683,7 @@ def render():
         st.markdown("---")
 
 
-        for scene in project.scenes:
+        for i, scene in enumerate(project.scenes):
             status_icon = "✅" if scene.video_generated else "⬜"
             
             with st.expander(
@@ -701,7 +701,7 @@ def render():
                     scene.video_generated = st.checkbox(
                         "✅ สร้างวิดีโอแล้ว",
                         value=scene.video_generated,
-                        key=f"gen_{scene.scene_id}"
+                        key=f"gen_{scene.scene_id}_{i}"
                     )
                     
                     # Per-prompt mode: individual generate button
@@ -711,7 +711,7 @@ def render():
                         btn_label = "🔄 สร้างใหม่" if has_prompt else "✨ สร้าง Prompt"
                         btn_type = "secondary" if has_prompt else "primary"
                         
-                        if st.button(btn_label, key=f"gen_single_{scene.scene_id}", type=btn_type, use_container_width=True):
+                        if st.button(btn_label, key=f"gen_single_{scene.scene_id}_{i}", type=btn_type, use_container_width=True):
                             if provider_obj and not provider_obj.is_available:
                                 st.error(f"❌ ขาด API Key")
                             else:
@@ -778,10 +778,10 @@ def render():
                             st.code(scene.veo_prompt, language="text")
                             col_copy, col_dl = st.columns(2)
                             with col_copy:
-                                if st.button("📋 คัดลอก Video Style", key=f"copy_veo_{scene.order}", use_container_width=True):
-                                    copy_to_clipboard(scene.veo_prompt, f"veo_{scene.order}")
+                                if st.button("📋 คัดลอก Video Style", key=f"copy_veo_{scene.order}_{i}", use_container_width=True):
+                                    copy_to_clipboard(scene.veo_prompt, f"veo_{scene.order}_{i}")
                             with col_dl:
-                                st.download_button("💾 ดาวน์โหลด", data=scene.veo_prompt, file_name=f"scene{scene.order}_video_style.txt", mime="text/plain", key=f"dl_veo_{scene.order}", use_container_width=True)
+                                st.download_button("💾 ดาวน์โหลด", data=scene.veo_prompt, file_name=f"scene{scene.order}_video_style.txt", mime="text/plain", key=f"dl_veo_{scene.order}_{i}", use_container_width=True)
                         else:
                             st.warning("ยังไม่มี Video Style Prompt")
                     
@@ -793,10 +793,10 @@ def render():
                             st.success(scene.voiceover_prompt)
                             col_copy, col_dl = st.columns(2)
                             with col_copy:
-                                if st.button("📋 คัดลอกบทพากย์", key=f"copy_vo_{scene.order}", use_container_width=True):
-                                    copy_to_clipboard(scene.voiceover_prompt, f"vo_{scene.order}")
+                                if st.button("📋 คัดลอกบทพากย์", key=f"copy_vo_{scene.order}_{i}", use_container_width=True):
+                                    copy_to_clipboard(scene.voiceover_prompt, f"vo_{scene.order}_{i}")
                             with col_dl:
-                                st.download_button("💾 ดาวน์โหลด", data=scene.voiceover_prompt, file_name=f"scene{scene.order}_voiceover.txt", mime="text/plain", key=f"dl_vo_{scene.order}", use_container_width=True)
+                                st.download_button("💾 ดาวน์โหลด", data=scene.voiceover_prompt, file_name=f"scene{scene.order}_voiceover.txt", mime="text/plain", key=f"dl_vo_{scene.order}_{i}", use_container_width=True)
                         else:
                             st.warning("ยังไม่มีบทพากย์")
                     
@@ -808,10 +808,10 @@ def render():
                             st.code(scene.voice_tone, language="text")
                             col_copy, col_dl = st.columns(2)
                             with col_copy:
-                                if st.button("📋 คัดลอก Speaking Style", key=f"copy_tone_{scene.order}", use_container_width=True):
-                                    copy_to_clipboard(scene.voice_tone, f"tone_{scene.order}")
+                                if st.button("📋 คัดลอก Speaking Style", key=f"copy_tone_{scene.order}_{i}", use_container_width=True):
+                                    copy_to_clipboard(scene.voice_tone, f"tone_{scene.order}_{i}")
                             with col_dl:
-                                st.download_button("💾 ดาวน์โหลด", data=scene.voice_tone, file_name=f"scene{scene.order}_speaking_style.txt", mime="text/plain", key=f"dl_tone_{scene.order}", use_container_width=True)
+                                st.download_button("💾 ดาวน์โหลด", data=scene.voice_tone, file_name=f"scene{scene.order}_speaking_style.txt", mime="text/plain", key=f"dl_tone_{scene.order}_{i}", use_container_width=True)
                         else:
                             st.warning("ยังไม่มี Speaking Style")
                     
@@ -837,10 +837,10 @@ def render():
                             st.code(combined_text, language="text")
                             col_copy, col_dl = st.columns(2)
                             with col_copy:
-                                if st.button("📋 คัดลอกทั้งหมด", key=f"copy_all_{scene.order}", use_container_width=True):
-                                    copy_to_clipboard(combined_text, f"all_{scene.order}")
+                                if st.button("📋 คัดลอกทั้งหมด", key=f"copy_all_{scene.order}_{i}", use_container_width=True):
+                                    copy_to_clipboard(combined_text, f"all_{scene.order}_{i}")
                             with col_dl:
-                                st.download_button("💾 ดาวน์โหลด", data=combined_text, file_name=f"scene{scene.order}_full_prompt.txt", mime="text/plain", key=f"dl_all_{scene.order}", use_container_width=True)
+                                st.download_button("💾 ดาวน์โหลด", data=combined_text, file_name=f"scene{scene.order}_full_prompt.txt", mime="text/plain", key=f"dl_all_{scene.order}_{i}", use_container_width=True)
                         else:
                             st.warning("ยังไม่มี Prompt")
         
