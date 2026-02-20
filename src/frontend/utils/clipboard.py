@@ -11,7 +11,6 @@ Solution: Use Streamlit's native st.code() which has a built-in copy
            a universal fallback that always works.
 """
 import streamlit as st
-import streamlit.components.v1 as components
 
 
 def copy_to_clipboard(text: str, key: str) -> bool:
