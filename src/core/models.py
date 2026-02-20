@@ -158,6 +158,8 @@ class Project(BaseModel):
     target_duration: int = 60
     style_instructions: str = ""
     script_text: str = ""
+    hook_type: str = "auto"             # ประเภทการเปิดคลิป (Hook)
+    closing_type: str = "auto"          # ประเภทการปิดคลิป (CTA/Closing)
     audio_path: Optional[str] = None
     audio_duration: float = 0.0
     audio_segments: list[AudioSegment] = []

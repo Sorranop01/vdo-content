@@ -21,7 +21,8 @@ from src.frontend.utils import show_back_button, auto_save_project, show_step_gu
 from src.config.constants import (
     STEP_CONTENT, STEP_VIDEO_PROMPT, STEP_SCRIPT,
     VOICE_PERSONALITIES, DATA_DIR,
-    CONTENT_CATEGORIES, VIDEO_FORMATS, PLATFORMS
+    CONTENT_CATEGORIES, VIDEO_FORMATS, PLATFORMS,
+    HOOK_TYPES, CLOSING_TYPES, get_duration_tier,
 )
 
 
@@ -343,6 +344,40 @@ def render():
     )
     model_cfg = AI_SCRIPT_MODELS[selected_script_model]
     
+    # --- Hook & Closing Type Selectors ---
+    tier = get_duration_tier(project.target_duration)
+    
+    with st.expander(f"🎣 ตั้งค่า Hook & Closing ({tier.get('label', 'กลาง')})", expanded=False):
+        st.caption(f"โครงสร้างแนะนำ: {tier.get('structure', 'Hook → Main → CTA')}")
+        
+        hook_col, closing_col = st.columns(2)
+        with hook_col:
+            hook_options = [label for _, label in HOOK_TYPES]
+            hook_keys = [key for key, _ in HOOK_TYPES]
+            current_hook_idx = hook_keys.index(project.hook_type) if project.hook_type in hook_keys else 0
+            selected_hook = st.selectbox(
+                "🎣 วิธีเปิดคลิป (Hook)",
+                options=hook_options,
+                index=current_hook_idx,
+                key="step3_hook_type",
+            )
+            project.hook_type = hook_keys[hook_options.index(selected_hook)]
+        
+        with closing_col:
+            closing_options = [label for _, label in CLOSING_TYPES]
+            closing_keys = [key for key, _ in CLOSING_TYPES]
+            current_closing_idx = closing_keys.index(project.closing_type) if project.closing_type in closing_keys else 0
+            selected_closing = st.selectbox(
+                "🔚 วิธีปิดคลิป (CTA/Closing)",
+                options=closing_options,
+                index=current_closing_idx,
+                key="step3_closing_type",
+            )
+            project.closing_type = closing_keys[closing_options.index(selected_closing)]
+        
+        st.session_state.current_project = project
+        auto_save_project()
+    
     with col_ai:
         if st.button("🤖 สร้างบทด้วย AI", use_container_width=True):
             script_api_key = os.getenv(model_cfg["api_key_env"], "")
@@ -362,6 +397,8 @@ def render():
                             target_duration=project.target_duration,
                             language="th",
                             story_proposal=getattr(project, 'proposal', None),
+                            hook_type=project.hook_type,
+                            closing_type=project.closing_type,
                         )
                         # Store in separate key (NOT widget key) to avoid Streamlit error
                         st.session_state._generated_script = extract_voiceover_text(script)

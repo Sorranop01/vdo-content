@@ -597,16 +597,52 @@ Apply these visual guidelines:
 """
         
         # Build context for AI - STRICT literal translation with scene continuity
+        # ========== POSITION-AWARE INSTRUCTIONS ==========
+        position_instruction = ""
         continuity_instruction = ""
-        if previous_scene_summary:
-            continuity_instruction = f"""
+        
+        if scene_number == 1:
+            # FIRST SCENE — Hook visual
+            position_instruction = f"""**🎣 HOOK SCENE (FIRST SCENE — Must grab attention in 3 seconds!):**
+- This is the OPENING scene. The very first thing the viewer sees.
+- Make visuals EYE-CATCHING and DYNAMIC — bold colors, striking composition, dramatic lighting.
+- {"Character should look DIRECTLY at camera with engaged expression, as if about to share something exciting." if video_type != "no_person" else "Use a dramatic reveal, bold colors, or unexpected visual that stops scrolling."}
+- Camera movement: Start with a close-up or dramatic angle, then pull back.
+- Create INSTANT INTRIGUE — the viewer should want to keep watching.
+- Do NOT start with a boring establishing shot or wide landscape.
+"""
+            continuity_instruction = f"**📌 This is Scene {scene_number} of {total_scenes} (FIRST SCENE - establish the character clearly AND hook the viewer)**\n"
+            
+        elif scene_number == total_scenes:
+            # LAST SCENE — Closing visual
+            position_instruction = f"""**🔚 CLOSING SCENE (FINAL SCENE — Must encourage engagement!):**
+- This is the LAST scene. The final impression on the viewer.
+- {"Character should face camera with warm, inviting expression. Gestures that encourage action (pointing forward, thumbs up, waving)." if video_type != "no_person" else "End with a memorable, satisfying visual — a beautiful final composition, logo-friendly framing, or call-to-action friendly layout."}
+- Create a sense of COMPLETION and SATISFACTION.
+- Lighting should be warm and inviting.
+- Camera: End on a medium or close-up shot that feels personal and intimate.
+- The viewer should feel COMPELLED to follow/like/share/comment.
+"""
+            if previous_scene_summary:
+                continuity_instruction = f"""
+**🔗 SCENE CONTINUITY (FINAL SCENE):**
+This is Scene {scene_number} of {total_scenes} (LAST SCENE - create a memorable ending).
+Previous scene showed: {previous_scene_summary}
+→ MAINTAIN VISUAL CONTINUITY while shifting to a closing mood.
+"""
+            else:
+                continuity_instruction = f"**📌 This is Scene {scene_number} of {total_scenes} (LAST SCENE - create a memorable closing)**\n"
+        else:
+            # MIDDLE SCENES — Normal continuity
+            if previous_scene_summary:
+                continuity_instruction = f"""
 **🔗 SCENE CONTINUITY:**
 This is Scene {scene_number} of {total_scenes}.
 Previous scene showed: {previous_scene_summary}
 → MAINTAIN VISUAL CONTINUITY! Same character appearance, similar setting unless narration indicates location change.
 """
-        else:
-            continuity_instruction = f"**📌 This is Scene {scene_number} of {total_scenes} (FIRST SCENE - establish the character clearly)**\n"
+            else:
+                continuity_instruction = f"**📌 This is Scene {scene_number} of {total_scenes}**\n"
         
         # Build narrative context section
         narrative_context = ""
@@ -644,6 +680,8 @@ If the narration is about concepts/objects/places, show those WITHOUT a person."
 {direction_instructions}
 
 {content_style_instructions}
+
+{position_instruction}
 
 {continuity_instruction}
 {subject_section}

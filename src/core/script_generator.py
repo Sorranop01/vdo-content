@@ -12,6 +12,10 @@ logger = logging.getLogger("vdo_content.script_generator")
 
 from .llm_router import LLMRouter, get_router, LLMResponse
 from .llm_config import ProviderName, DEFAULT_PROVIDER, get_available_providers
+try:
+    from src.config.constants import get_duration_tier, DURATION_TIERS
+except ImportError:
+    from config.constants import get_duration_tier, DURATION_TIERS
 
 
 class ScriptGenerator:
@@ -61,7 +65,9 @@ class ScriptGenerator:
         language: str = "en",
         provider: Optional[ProviderName] = None,
         story_proposal = None,
-        visual_context: Optional[str] = None
+        visual_context: Optional[str] = None,
+        hook_type: str = "auto",
+        closing_type: str = "auto",
     ) -> str:
         """
         Generate narration script from topic
@@ -74,6 +80,8 @@ class ScriptGenerator:
             provider: Override default provider for this call
             story_proposal: StoryProposal from Ideation (optional)
             visual_context: Visual theme/director's note (optional)
+            hook_type: How to open the clip (question, shocking_fact, pain_point, story, bold_claim, auto)
+            closing_type: How to close the clip (cta_follow, cta_share, cta_comment, tease_next, summary_cta, auto)
             
         Returns:
             Generated script text
@@ -82,6 +90,10 @@ class ScriptGenerator:
             raise RuntimeError("No LLM provider configured. Set API key in .env")
         
         use_provider = provider or self.provider
+        
+        # ========== DURATION TIER DETECTION ==========
+        tier = get_duration_tier(target_duration)
+        tier_key = tier["tier_key"]
         
         # Calculate approximate word count
         if language == "th":
@@ -130,6 +142,15 @@ class ScriptGenerator:
         if visual_context:
             context_parts.append(f"\nแนวทางภาพ: {visual_context}")
         
+        # ========== HOOK INSTRUCTIONS ==========
+        hook_instructions = self._build_hook_instructions(hook_type, tier, language)
+        
+        # ========== CLOSING INSTRUCTIONS ==========
+        closing_instructions = self._build_closing_instructions(closing_type, tier, language)
+        
+        # ========== DURATION-ADAPTIVE STRUCTURE ==========
+        structure_instructions = self._build_structure_instructions(tier, language)
+        
         # Construct prompt with STRICT duration enforcement
         if language == "th":
             # Calculate min/max bounds (±20% tolerance)
@@ -141,9 +162,17 @@ class ScriptGenerator:
 
 **CRITICAL LENGTH REQUIREMENT:**
 - Target duration: {target_duration} seconds
+- Duration tier: {tier.get('label', tier_key)}
 - You MUST write approximately {target_chars} Thai characters (±20%)
 - Minimum: {min_chars} characters, Maximum: {max_chars} characters
 - Aim for approximately {num_scenes} paragraphs/scenes
+- Maximum key points: {tier.get('max_points', 4)}
+
+{structure_instructions}
+
+{hook_instructions}
+
+{closing_instructions}
 
 **Rules:**
 1. Write ONLY the actual spoken narration — the exact words to be read aloud by a voice actor
@@ -184,6 +213,11 @@ class ScriptGenerator:
 ⚠️ CRITICAL: Your script MUST be approximately {target_chars} characters ({target_duration} seconds).
 If too short, add more content. If too long, summarize.
 
+⚠️ MANDATORY STRUCTURE: Follow the structure below strictly.
+{tier.get('structure', 'Hook → Main Content → CTA')}
+- Content density: {tier.get('density', 'พอประมาณ')}
+- Max key points: {tier.get('max_points', 4)}
+
 Remember: Use 100% correct Thai language. No English or garbled characters!
 
 Create a natural script covering the specified topics."""
@@ -198,8 +232,15 @@ Style: {style}
 
 **CRITICAL LENGTH REQUIREMENT:**
 - Target duration: {target_duration} seconds
+- Duration tier: {tier.get('label', tier_key)}
 - You MUST write approximately {target_words} words (±20%)
 - Minimum: {min_words} words, Maximum: {max_words} words
+
+{structure_instructions}
+
+{hook_instructions}
+
+{closing_instructions}
 
 Rules:
 - Write short sentences, max 15 words each
@@ -210,7 +251,10 @@ Rules:
             
             user_prompt = f"""Write a narration script about: {topic}
 
-⚠️ CRITICAL: Your script MUST be approximately {target_words} words ({target_duration} seconds)."""
+⚠️ CRITICAL: Your script MUST be approximately {target_words} words ({target_duration} seconds).
+⚠️ MANDATORY STRUCTURE: {tier.get('structure_en', 'Hook → Main Content → CTA')}
+- Content density: {tier.get('density_en', 'Moderate')}
+- Max key points: {tier.get('max_points', 4)}"""
         
         # Call LLM via router with lower temperature for Thai
         response = self._router.chat(
@@ -238,6 +282,120 @@ Rules:
             )
         
         return script
+    
+    def _build_hook_instructions(self, hook_type: str, tier: dict, language: str) -> str:
+        """Build hook/opening instructions for the script based on hook_type and duration tier."""
+        
+        # Hook type specific guidance
+        hook_type_guidance = {
+            "question": {
+                "th": "เปิดด้วยคำถามที่คนดูอยากรู้คำตอบ เช่น 'รู้ไหมว่า...?' หรือ 'เคยสงสัยไหมว่าทำไม...?'",
+                "en": "Open with a compelling question the viewer wants answered, e.g. 'Did you know...?' or 'Ever wondered why...?'"
+            },
+            "shocking_fact": {
+                "th": "เปิดด้วยข้อมูลที่น่าตกใจหรือสถิติที่เซอร์ไพรส์ เช่น 'คนไทยกว่า 70% ไม่รู้ว่า...'",
+                "en": "Open with a shocking fact or surprising statistic that stops viewers in their tracks"
+            },
+            "pain_point": {
+                "th": "เปิดด้วยปัญหาที่คนดูเผชิญอยู่จริงๆ เช่น 'เบื่อไหมที่...' หรือ 'คุณเคยรู้สึก...'",
+                "en": "Open by addressing a real pain point or frustration the viewer faces"
+            },
+            "story": {
+                "th": "เปิดด้วยเรื่องเล่าสั้นๆ ที่ดึงดูดอารมณ์ เช่น เล่าประสบการณ์จริง หรือ สถานการณ์ที่คนดูเข้าถึงได้",
+                "en": "Open with a short, emotionally engaging story or relatable scenario"
+            },
+            "bold_claim": {
+                "th": "เปิดด้วยคำกล่าวที่กล้าหาญหรือใจความสำคัญ เช่น 'นี่คือวิธีที่ดีที่สุดในการ...'",
+                "en": "Open with a bold, attention-grabbing claim or statement"
+            },
+            "auto": {
+                "th": "เลือกวิธีเปิดที่เหมาะสมที่สุดกับหัวข้อ — อาจเป็นคำถาม, fact น่าตกใจ, pain point, เรื่องเล่า, หรือ bold claim",
+                "en": "Choose the most appropriate opening for this topic — question, shocking fact, pain point, story, or bold claim"
+            },
+        }
+        
+        hook_detail = hook_type_guidance.get(hook_type, hook_type_guidance["auto"])
+        
+        if language == "th":
+            return f"""**🎣 HOOK — เปิดคลิป (สำคัญมาก! ต้องสะกดคนดูใน 3 วินาทีแรก):**
+- ประโยคแรกของบทพูดต้องเป็น HOOK ที่ดึงดูดความสนใจทันที
+- {hook_detail['th']}
+- {tier.get('hook_guidance', 'ต้องจบภายใน 3 วินาที')}
+- ⚠️ ห้ามเริ่มด้วยประโยคธรรมดา ห้ามเริ่มด้วย "สวัสดีครับ" หรือ "วันนี้เราจะมาพูดถึง..."
+- ต้องทำให้คนดูหยุดเลื่อน (stop scrolling) ทันที!"""
+        else:
+            return f"""**🎣 HOOK — Opening (CRITICAL! Must captivate viewers in first 3 seconds):**
+- The first sentence MUST be a powerful hook that grabs attention immediately
+- {hook_detail['en']}
+- {tier.get('hook_guidance_en', 'Must finish within 3 seconds')}
+- ⚠️ Do NOT start with generic openers like "Today we'll talk about..." or "Hello everyone"
+- Must make viewers stop scrolling immediately!"""
+    
+    def _build_closing_instructions(self, closing_type: str, tier: dict, language: str) -> str:
+        """Build closing/CTA instructions for the script based on closing_type and duration tier."""
+        
+        closing_type_guidance = {
+            "cta_follow": {
+                "th": "ปิดด้วยการชวนกดติดตามช่อง เช่น 'กดติดตามไว้เลย จะมีเรื่องดีๆ มาเล่าให้ฟังอีกเยอะ'",
+                "en": "Close by encouraging viewers to follow/subscribe the channel"
+            },
+            "cta_share": {
+                "th": "ปิดด้วยการชวนแชร์ เช่น 'ถ้าเป็นประโยชน์แชร์ให้เพื่อนด้วยนะ'",
+                "en": "Close by encouraging viewers to share with friends"
+            },
+            "cta_comment": {
+                "th": "ปิดด้วยคำถามให้คอมเม้นท์ เช่น 'คุณคิดยังไงบ้าง บอกเราได้ในคอมเม้นท์'",
+                "en": "Close with a question that encourages comments"
+            },
+            "tease_next": {
+                "th": "ปิดด้วยการ tease ตอนต่อไป ให้คนดูอยากรู้ เช่น 'แต่ยังไม่หมดแค่นี้ ตอนหน้าเราจะเจาะลึกเรื่อง...'",
+                "en": "Close by teasing the next episode/part to create anticipation"
+            },
+            "summary_cta": {
+                "th": "สรุปประเด็นสำคัญสั้นๆ แล้วจบด้วย CTA เช่น 'สรุปแล้ววันนี้เราได้เรียนรู้... กดไลค์กดแชร์ไว้ด้วยนะ'",
+                "en": "Briefly summarize key points, then close with a CTA"
+            },
+            "auto": {
+                "th": "เลือกวิธีปิดที่เหมาะสมกับเนื้อหา — อาจเป็น CTA, สรุป, tease, หรือคำถามให้มีส่วนร่วม",
+                "en": "Choose the most appropriate closing — CTA, summary, tease, or engagement question"
+            },
+        }
+        
+        closing_detail = closing_type_guidance.get(closing_type, closing_type_guidance["auto"])
+        
+        if language == "th":
+            return f"""**🔚 CLOSING — ปิดคลิป (สำคัญ! ต้องทำให้คนดูมีส่วนร่วมหรือกลับมาดูอีก):**
+- ประโยคสุดท้ายของบทพูดต้องเป็น CLOSING ที่กระตุ้นให้คนดูทำอะไรบางอย่าง
+- {closing_detail['th']}
+- {tier.get('closing_guidance', 'CTA ชัดเจน')}
+- ⚠️ ห้ามจบแบบทิ้งลอย ห้ามจบแบบ "ก็ประมาณนี้แหละ" หรือ "ลาก่อน"
+- ต้องทำให้คนดูรู้สึกได้รับประโยชน์ และอยากกดไลค์/แชร์/ติดตาม!"""
+        else:
+            return f"""**🔚 CLOSING — End of clip (IMPORTANT! Must drive viewer engagement or return visits):**
+- The last sentence MUST be a strong closing that encourages action
+- {closing_detail['en']}
+- {tier.get('closing_guidance_en', 'Clear CTA')}
+- ⚠️ Do NOT end abruptly or with weak closings like "That's about it" or "Goodbye"
+- Must make viewers feel they gained value and want to like/share/follow!"""
+    
+    def _build_structure_instructions(self, tier: dict, language: str) -> str:
+        """Build content structure instructions based on duration tier."""
+        tier_key = tier["tier_key"]
+        
+        if language == "th":
+            return f"""**📐 โครงสร้างเนื้อหา (ตาม Duration Tier: {tier.get('label', tier_key)}):**
+- โครงสร้างบังคับ: {tier.get('structure', 'Hook → Main → CTA')}
+- ความหนาแน่นของเนื้อหา: {tier.get('density', 'พอประมาณ')}
+- จำนวนประเด็นหลักสูงสุด: {tier.get('max_points', 4)} ข้อ
+- ⚠️ ห้ามใส่เนื้อหามากเกินไปสำหรับคลิปสั้น ห้ามใส่เนื้อหาน้อยเกินไปสำหรับคลิปยาว
+- AI ต้องวิเคราะห์และปรับเนื้อหาให้เหมาะกับความยาว {tier.get('range', (60, 180))[0]}-{tier.get('range', (60, 180))[1]} วินาที"""
+        else:
+            return f"""**📐 CONTENT STRUCTURE (Duration Tier: {tier.get('label', tier_key)}):**
+- Required structure: {tier.get('structure_en', 'Hook → Main → CTA')}
+- Content density: {tier.get('density_en', 'Moderate')}
+- Maximum key points: {tier.get('max_points', 4)}
+- ⚠️ Do NOT overload short clips with too much content. Do NOT make long clips shallow.
+- AI must analyze and adapt content for {tier.get('range', (60, 180))[0]}-{tier.get('range', (60, 180))[1]} seconds"""
     
     def _validate_thai_script(self, script: str) -> str:
         """
