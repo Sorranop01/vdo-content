@@ -138,7 +138,6 @@ def render_sidebar():
         st.radio(
             "ขั้นตอน",
             workflow_options,
-            index=current_wf_index,
             label_visibility="collapsed",
             key="wf_nav",
             on_change=_on_workflow_change
