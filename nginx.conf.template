@@ -9,8 +9,7 @@ http {
     client_max_body_size 250M;
 
     server {
-        # Cloud Run uses h2c (HTTP/2 cleartext) when --use-http2 is passed
-        listen ${PORT} http2;
+        listen ${PORT};
 
         server_name _;
 
