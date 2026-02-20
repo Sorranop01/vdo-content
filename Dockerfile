@@ -5,6 +5,8 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
+    nginx \
+    gettext-base \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -16,8 +18,11 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code, nginx config template, and start script
 COPY . .
+COPY nginx.conf.template /app/nginx.conf.template
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
 # Create data directory
 RUN mkdir -p /app/data/projects
@@ -30,8 +35,8 @@ ENV STREAMLIT_SERVER_RUN_ON_SAVE=false
 ENV STREAMLIT_SERVER_FILE_WATCHER_TYPE=none
 ENV STREAMLIT_SERVER_HEADLESS=true
 
-# Health check
-HEALTHCHECK CMD curl --fail http://localhost:${PORT}/_stcore/health || exit 1
+# Health check (against Nginx since it answers on $PORT)
+HEALTHCHECK CMD curl --http2-prior-knowledge --fail http://localhost:${PORT}/ || exit 1
 
-# Run Streamlit on Cloud Run's $PORT
-CMD streamlit run app.py --server.port=${PORT} --server.address=0.0.0.0
+# Run the startup script (Nginx + Streamlit)
+CMD ["/app/start.sh"]
