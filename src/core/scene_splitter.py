@@ -5,6 +5,10 @@ Scene Splitter - แบ่งบทพากย์เป็นฉากๆ ต�
 import re
 from typing import Optional
 from .models import Scene
+try:
+    from .calibration import CalibrationProfile
+except ImportError:
+    CalibrationProfile = None  # type: ignore
 
 
 class SceneSplitter:
@@ -22,10 +26,24 @@ class SceneSplitter:
     def __init__(
         self, 
         max_duration: float = DEFAULT_MAX_DURATION,
-        language: str = "th"
+        language: str = "th",
+        calibration_profile=None,  # Optional[CalibrationProfile]
     ):
         self.max_duration = max_duration
         self.language = language
+        # Override speaking rate from calibration profile if provided
+        if calibration_profile is not None:
+            if language == "th" and hasattr(calibration_profile, "chars_per_second"):
+                self.CHARS_PER_SECOND_TH = calibration_profile.chars_per_second
+            elif language != "th" and hasattr(calibration_profile, "words_per_second"):
+                self.WORDS_PER_SECOND_EN = calibration_profile.words_per_second
+            import logging
+            logging.getLogger("vdo_content.scene_splitter").info(
+                f"Using calibrated rate: "
+                f"{self.CHARS_PER_SECOND_TH if language == 'th' else self.WORDS_PER_SECOND_EN:.2f} "
+                f"{'chars' if language == 'th' else 'words'}/sec"
+            )
+        self._calibration_profile = calibration_profile
     
     def calculate_duration(self, text: str) -> float:
         """Calculate speaking duration from text"""

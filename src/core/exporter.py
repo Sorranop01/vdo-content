@@ -214,19 +214,19 @@ class ProjectExporter:
             lines.append("")
             
             # Video Style Prompt
-            lines.append("[🎬 Video Style Prompt]")
+            lines.append("[???? Video Style Prompt]")
             lines.append(scene.veo_prompt if scene.veo_prompt else "[No prompt generated]")
             lines.append("")
             
             # Thai Voiceover (pure narration)
             if scene.voiceover_prompt:
-                lines.append("[🎤 เสียงพากย์ไทย]")
+                lines.append("[???? ???????????????????????????????????????]")
                 lines.append(scene.voiceover_prompt)
                 lines.append("")
             
             # Speaking Style (English direction)
             if scene.voice_tone:
-                lines.append("[🎭 Speaking Style]")
+                lines.append("[???? Speaking Style]")
                 lines.append(scene.voice_tone)
                 lines.append("")
             
@@ -236,7 +236,7 @@ class ProjectExporter:
         return "\n".join(lines)
     
     def _generate_prompts_file(self, project: Project) -> str:
-        """Generate prompts.txt content — full 4-section format"""
+        """Generate prompts.txt content ??? full 4-section format"""
         lines = [
             f"VDO CONTENT - VEO 3 PROMPTS (8s per clip)",
             f"Project: {project.title}",
@@ -252,19 +252,19 @@ class ProjectExporter:
             lines.append("-" * 50)
             
             # Video Style Prompt
-            lines.append("[🎬 Video Style Prompt]")
+            lines.append("[???? Video Style Prompt]")
             lines.append(scene.veo_prompt if scene.veo_prompt else "(No prompt)")
             lines.append("")
             
             # Thai Voiceover
             if scene.voiceover_prompt:
-                lines.append("[🎤 เสียงพากย์ไทย]")
+                lines.append("[???? ???????????????????????????????????????]")
                 lines.append(scene.voiceover_prompt)
                 lines.append("")
             
             # Speaking Style
             if scene.voice_tone:
-                lines.append("[🎭 Speaking Style]")
+                lines.append("[???? Speaking Style]")
                 lines.append(scene.voice_tone)
                 lines.append("")
             
@@ -383,7 +383,7 @@ class ProjectExporter:
 
 ### Video Production
 
-Each scene is designed for ≤8 seconds to fit Veo 3's maximum duration.
+Each scene is designed for ???8 seconds to fit Veo 3's maximum duration.
 
 **Recommended workflow:**
 1. Generate videos using prompts in order
@@ -422,3 +422,199 @@ Each scene is designed for ≤8 seconds to fit Veo 3's maximum duration.
             lines.append("-" * 30)
         
         return "\n".join(lines)
+
+    # ????????? Video Editor Export Methods (Feature 5) ??????????????????????????????????????????????????????????????????????????????????????????
+
+    def export_edl(self, project: Project) -> str:
+        """
+        Export as EDL (Edit Decision List) format.
+        Compatible with Adobe Premiere Pro, DaVinci Resolve, Final Cut Pro 7.
+
+        Returns:
+            EDL content as string
+        """
+        lines = [
+            f"TITLE: {project.title}",
+            "FCM: NON-DROP FRAME",
+            "",
+        ]
+
+        for i, scene in enumerate(project.scenes, start=1):
+            # Timecode format: HH:MM:SS:FF (assuming 24fps)
+            def to_tc(secs: float, fps: int = 24) -> str:
+                h = int(secs // 3600)
+                m = int((secs % 3600) // 60)
+                s = int(secs % 60)
+                f = int((secs % 1) * fps)
+                return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+
+            src_in = to_tc(scene.start_time)
+            src_out = to_tc(scene.end_time)
+            rec_in = src_in
+            rec_out = src_out
+
+            clip_name = f"scene_{scene.order:03d}"
+
+            lines += [
+                f"{i:03d}  {clip_name}  V  C  {src_in} {src_out} {rec_in} {rec_out}",
+                f"* FROM CLIP NAME: {clip_name}",
+                f"* NARRATION: {scene.narration_text[:80]}",
+            ]
+            if scene.veo_prompt:
+                truncated_prompt = scene.veo_prompt[:60].replace("\n", " ")
+                lines.append(f"* VEO PROMPT: {truncated_prompt}...")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def export_fcpxml(self, project: Project) -> str:
+        """
+        Export as FCPXML (Final Cut Pro XML) format.
+        Compatible with Final Cut Pro X and Motion.
+
+        Returns:
+            FCPXML content as XML string
+        """
+        from xml.etree.ElementTree import Element, SubElement, tostring, indent
+        import xml.etree.ElementTree as ET
+
+        # fps as fraction (24/1)
+        fps_num, fps_den = 24, 1
+
+        def secs_to_rational(secs: float) -> str:
+            frames = int(round(secs * fps_num))
+            return f"{frames}/{fps_num}s"
+
+        fcpxml = Element("fcpxml", version="1.10")
+        resources = SubElement(fcpxml, "resources")
+
+        total_dur = project.total_duration if project.total_duration > 0 else sum(
+            s.estimated_duration for s in project.scenes
+        )
+
+        # Format resource
+        fmt = SubElement(resources, "format", {
+            "id": "r1",
+            "name": f"FFVideoFormat{fps_num}",
+            "frameDuration": f"{fps_den}/{fps_num}s",
+            "width": "1920",
+            "height": "1080",
+        })
+
+        # Library / event / project
+        library = SubElement(fcpxml, "library")
+        event = SubElement(library, "event", name=project.title)
+        proj = SubElement(event, "project", name=project.title)
+        sequence = SubElement(proj, "sequence", {
+            "duration": secs_to_rational(total_dur),
+            "format": "r1",
+        })
+        spine = SubElement(sequence, "spine")
+
+        for scene in project.scenes:
+            dur = scene.estimated_duration or (scene.end_time - scene.start_time)
+            gap = SubElement(spine, "gap", {
+                "name": f"Scene {scene.order:03d}",
+                "offset": secs_to_rational(scene.start_time),
+                "duration": secs_to_rational(dur),
+            })
+            # Annotation note with narration + prompt
+            note = SubElement(gap, "note")
+            note.text = f"[Narration] {scene.narration_text}\n[Veo Prompt] {scene.veo_prompt[:120]}"
+
+        try:
+            ET.indent(fcpxml, space="  ")
+        except AttributeError:
+            pass  # Python < 3.9 ??? no indent, still valid XML
+
+        xml_bytes = tostring(fcpxml, encoding="unicode", xml_declaration=False)
+        return '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_bytes
+
+    def export_otio_json(self, project: Project) -> str:
+        """
+        Export as OpenTimelineIO-compatible JSON.
+        Compatible with DaVinci Resolve, Avid, Premiere via OTIO adapters.
+
+        Returns:
+            JSON string in OTIO schema format
+        """
+        fps = 24
+
+        def secs_to_rational(s: float) -> dict:
+            return {"value": int(round(s * fps)), "rate": fps, "OTIO_SCHEMA": "RationalTime.1"}
+
+        def time_range(start: float, dur: float) -> dict:
+            return {
+                "OTIO_SCHEMA": "TimeRange.1",
+                "start_time": secs_to_rational(start),
+                "duration": secs_to_rational(dur),
+            }
+
+        clips = []
+        for scene in project.scenes:
+            dur = scene.estimated_duration or (scene.end_time - scene.start_time)
+            clip = {
+                "OTIO_SCHEMA": "Clip.2",
+                "name": f"Scene {scene.order:03d} - {scene.narration_text[:40]}",
+                "source_range": time_range(scene.start_time, dur),
+                "metadata": {
+                    "vdo_content": {
+                        "narration": scene.narration_text,
+                        "veo_prompt": scene.veo_prompt,
+                        "quality_score": scene.quality_score,
+                    }
+                },
+            }
+            clips.append(clip)
+
+        otio = {
+            "OTIO_SCHEMA": "Timeline.1",
+            "name": project.title,
+            "tracks": [{
+                "OTIO_SCHEMA": "Track.1",
+                "name": "Video",
+                "kind": "Video",
+                "children": clips,
+            }],
+            "metadata": {
+                "vdo_content": {
+                    "project_id": project.project_id,
+                    "topic": project.topic,
+                    "exported_at": datetime.now().isoformat(),
+                }
+            }
+        }
+
+        import json
+        return json.dumps(otio, ensure_ascii=False, indent=2)
+
+    def export_editor_bundle(self, project: Project) -> bytes:
+        """
+        Export all editor formats (EDL + FCPXML + OTIO) as a ZIP bundle.
+
+        Returns:
+            ZIP bytes containing all three files
+        """
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            safe_title = project.title.replace(" ", "_")[:40]
+            zf.writestr(f"{safe_title}_timeline.edl", self.export_edl(project))
+            zf.writestr(f"{safe_title}_timeline.fcpxml", self.export_fcpxml(project))
+            zf.writestr(f"{safe_title}_timeline.json", self.export_otio_json(project))
+            # Also include a quick reference README
+            readme = (
+                f"# {project.title} ??? Editor Timeline Bundle\n\n"
+                "## Files\n"
+                f"- `{safe_title}_timeline.edl` ??? Adobe Premiere Pro / DaVinci Resolve\n"
+                f"- `{safe_title}_timeline.fcpxml` ??? Final Cut Pro X\n"
+                f"- `{safe_title}_timeline.json` ??? OpenTimelineIO (universal)\n\n"
+                "## Usage\n"
+                "1. Import the appropriate file into your video editor\n"
+                "2. Each gap/clip corresponds to a Veo 3 scene (check Notes for prompts)\n"
+                "3. Replace each gap with your generated Veo 3 clip\n\n"
+                f"Generated by VDO Content at {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+            zf.writestr("README.md", readme)
+
+        buffer.seek(0)
+        return buffer.getvalue()

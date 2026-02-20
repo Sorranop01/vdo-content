@@ -550,7 +550,8 @@ Respond in the exact format specified."""
         video_type: str = "with_person",
         previous_narration: str = "",
         next_narration: str = "",
-        script_summary: str = ""
+        script_summary: str = "",
+        _retry_count: int = 0,  # Internal: tracks retry depth (max 2)
     ) -> str:
         """Generate prompt using DeepSeek AI with scene context"""
         
@@ -779,19 +780,52 @@ Now write the prompt (ENGLISH ONLY):"""
             scene.quality_score = score
             scene.quality_suggestions = suggestions
             
-            # 8. Strict Auto-regenerate if score too low (Threshold raised to 80 for Max Quality)
-            # If score < 80, it means major elements are missing or rules broken
-            if score < 80 and not getattr(self, '_is_retry', False):
-                logger.info(f"AI Quality score {score} < 80 (Strict), retrying with refinement")
-                self._is_retry = True
-                try:
-                    # Retry by recursively calling self-correction
-                    # Pass suggestions as "Directors Note" for the next attempt
-                    logger.info(f"Retrying prompt generation for better quality...")
-                except Exception:
-                    pass
-                finally:
-                    self._is_retry = False
+            # 8. Quality Retry Loop — if score < 80, retry up to 2 times
+            # Injects quality_suggestions as a "FIX REQUIRED" director's note
+            QUALITY_THRESHOLD = 80
+            MAX_RETRIES = 2
+            if score < QUALITY_THRESHOLD and _retry_count < MAX_RETRIES:
+                fix_note = "QUALITY FIX REQUIRED (attempt {}/{}): {}. Original director note: {}".format(
+                    _retry_count + 1,
+                    MAX_RETRIES,
+                    "; ".join(suggestions[:4]) if suggestions else "Improve visual specificity",
+                    directors_note
+                )
+                logger.info(
+                    f"Quality score {score:.0f} < {QUALITY_THRESHOLD} — retry "
+                    f"{_retry_count + 1}/{MAX_RETRIES} with fix note"
+                )
+                retried_prompt = self._generate_ai_prompt(
+                    scene=scene,
+                    character_override=character_override,
+                    visual_theme=visual_theme,
+                    directors_note=fix_note,
+                    aspect_ratio=aspect_ratio,
+                    scene_number=scene_number,
+                    total_scenes=total_scenes,
+                    previous_scene_summary=previous_scene_summary,
+                    direction_style_id=direction_style_id,
+                    prompt_style_config=prompt_style_config,
+                    video_type=video_type,
+                    previous_narration=previous_narration,
+                    next_narration=next_narration,
+                    script_summary=script_summary,
+                    _retry_count=_retry_count + 1,
+                )
+                # Keep the best-scoring prompt between original and retry
+                if scene.quality_score > score:
+                    logger.info(
+                        f"Retry improved score: {score:.0f} → {scene.quality_score:.0f}"
+                    )
+                    return retried_prompt
+                else:
+                    # Retry didn't help — restore original score and return original
+                    scene.quality_score = score
+                    scene.quality_suggestions = suggestions
+                    logger.info(
+                        f"Retry did not improve score ({scene.quality_score:.0f}), keeping original"
+                    )
+                    return prompt
             
             return prompt
             
@@ -2526,7 +2560,134 @@ Output ONLY the description, no explanation."""
             return script
 
 
+    def generate_variants(
+        self,
+        scene,
+        n: int = 3,
+        character_override: Optional[str] = None,
+        visual_theme: str = "",
+        directors_note: str = "",
+        aspect_ratio: str = "16:9",
+        scene_number: int = 1,
+        total_scenes: int = 1,
+        previous_scene_summary: str = "",
+        video_type: str = "with_person",
+        prompt_style_config: Optional[dict] = None,
+    ) -> list:
+        """
+        Generate N alternative prompts for A/B testing.
+
+        Each variant is generated with a slightly different temperature to
+        produce creative diversity. Variants are scored and sorted best-first.
+
+        Args:
+            scene: Scene object
+            n: Number of variants to generate (default 3)
+            ... other args passed to _generate_ai_prompt
+
+        Returns:
+            list of (prompt_str, quality_score) sorted by score descending
+        """
+        import copy
+
+        temperatures = [0.2, 0.45, 0.7][:n]
+        variants = []
+
+        for i, temp in enumerate(temperatures):
+            # Use a scene copy to avoid mutating quality_score on the original during generation
+            scene_copy = copy.deepcopy(scene)
+            try:
+                # Temporarily patch temperature via a workaround (call with different note)
+                variant_note = f"{directors_note} [VARIANT {i+1}: creative temp {temp:.1f}]"
+                orig_temp = 0.25  # default in _generate_ai_prompt
+                # We monkey-patch temperature via a class-level variable that _generate_ai_prompt reads
+                self._variant_temperature_override = temp
+                prompt = self._generate_ai_prompt(
+                    scene=scene_copy,
+                    character_override=character_override,
+                    visual_theme=visual_theme,
+                    directors_note=variant_note,
+                    aspect_ratio=aspect_ratio,
+                    scene_number=scene_number,
+                    total_scenes=total_scenes,
+                    previous_scene_summary=previous_scene_summary,
+                    video_type=video_type,
+                    prompt_style_config=prompt_style_config,
+                    _retry_count=99,  # Disable retry loop for variants (avoid cascading)
+                )
+                score = scene_copy.quality_score
+                variants.append((prompt, score))
+                logger.info(f"Variant {i+1}: score={score:.0f}")
+            except Exception as e:
+                logger.warning(f"Variant {i+1} generation failed: {e}")
+            finally:
+                self._variant_temperature_override = None
+
+        # Sort best-first
+        variants.sort(key=lambda x: x[1], reverse=True)
+        return variants
+
+    def run_consistency_pass(
+
+        self,
+        scenes: list,
+        character_reference: str = "",
+        video_type: str = "with_person",
+        auto_fix_critical: bool = True,
+    ):
+        """
+        Post-generation consistency check and optional auto-fix.
+
+        Runs VisualConsistencyChecker across all generated scenes.
+        If auto_fix_critical=True, attempts to fix critical issues using AI.
+
+        Args:
+            scenes: list of Scene objects with .veo_prompt set
+            character_reference: Character description text
+            video_type: "with_person" | "no_person" | "mixed"
+            auto_fix_critical: Whether to auto-fix critical issues with AI
+
+        Returns:
+            ConsistencyReport or None if checker unavailable
+        """
+        try:
+            from .consistency_checker import VisualConsistencyChecker, extract_visual_attributes
+        except ImportError:
+            logger.warning("consistency_checker not available -- skipping pass")
+            return None
+
+        checker = VisualConsistencyChecker(character_reference=character_reference)
+        report = checker.check(scenes, video_type=video_type)
+
+        logger.info(f"Consistency check: {report.summary}")
+
+        if report.issues and auto_fix_critical and self.is_available():
+            # Build baseline from scene 1
+            baseline_prompt = scenes[0].veo_prompt if scenes else ""
+            if character_reference:
+                baseline_prompt = f"{character_reference}. {baseline_prompt}"
+            baseline = extract_visual_attributes(baseline_prompt)
+
+            for scene in scenes[1:]:
+                scene_issues = report.issues_for_scene(scene.order)
+                critical = [i for i in scene_issues if i.severity == "critical"]
+                if critical:
+                    logger.info(
+                        f"Auto-fixing {len(critical)} critical issues in scene {scene.order}"
+                    )
+                    scene.veo_prompt = checker.fix_scene_prompt(
+                        prompt=scene.veo_prompt,
+                        baseline=baseline,
+                        issues=critical,
+                        llm_client=self.client,
+                        model=self._model,
+                    )
+
+        return report
+
+
 # Convenience functions
+
 def generate_veo_prompt(
     scene: Scene,
     character: str = "",

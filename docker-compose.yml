@@ -17,7 +17,7 @@ services:
     volumes:
       # Persist project data
       - vdo-data:/app/data
-    restart: unless-stopped
+    restart: always
     depends_on:
       - vdo-api
     deploy:
@@ -48,7 +48,7 @@ services:
       - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/vdo_content.db}
     volumes:
       - vdo-data:/app/data
-    restart: unless-stopped
+    restart: always
     deploy:
       resources:
         limits:
@@ -77,7 +77,7 @@ services:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    restart: unless-stopped
+    restart: always
     deploy:
       resources:
         limits:

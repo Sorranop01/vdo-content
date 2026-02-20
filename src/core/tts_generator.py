@@ -163,6 +163,92 @@ class GoogleTTSGenerator:
             return False
 
 
+class GeminiTTSGenerator:
+    """Generate speech using Gemini 2.5 Pro TTS via REST API"""
+    
+    # Official voices that support Thai according to Gemini API docs
+    VOICES = ["Aoede", "Kore", "Puck", "Charon", "Zephyr", "Orbit", "Leda", "Fenrir"]
+    
+    def __init__(self, api_key: Optional[str] = None):
+        if not api_key:
+            from dotenv import load_dotenv
+            load_dotenv(override=True)
+            self.api_key = os.getenv("GOOGLE_TTS_API_KEY")
+        else:
+            self.api_key = api_key
+
+        if not self.api_key:
+            raise ValueError("Google TTS API key not found. Set GOOGLE_TTS_API_KEY environment variable.")
+            
+        self.base_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-tts:generateContent"
+        self.session = requests.Session()
+        
+    def generate_speech(
+        self,
+        text: str,
+        voice: str = "Aoede",
+        language_code: str = "th-TH",
+        output_path: Optional[str] = None
+    ) -> str:
+        """Generate speech from text returning path to .wav file"""
+        if not text.strip():
+            raise ValueError("Text cannot be empty")
+            
+        payload = {
+            "contents": [{"parts": [{"text": text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {"voiceName": voice}
+                    },
+                    "languageCode": language_code
+                }
+            }
+        }
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        url = f"{self.base_url}?key={self.api_key}"
+        
+        try:
+            response = self.session.post(url, json=payload, headers=headers, timeout=60)
+            
+            if response.status_code != 200:
+                raise RuntimeError(f"Gemini TTS Error ({response.status_code}): {response.text}")
+                
+            result = response.json()
+            
+            # Extract audio from response
+            try:
+                audio_data = result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+            except (KeyError, IndexError):
+                raise ValueError(f"Unexpected response format from Gemini API: {result}")
+                
+            audio_bytes = base64.b64decode(audio_data)
+            
+            if output_path:
+                output_file = Path(output_path)
+            else:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+                output_file = Path(tmp.name)
+                
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            output_file.write_bytes(audio_bytes)
+            
+            return str(output_file)
+            
+        except requests.exceptions.RequestException as e:
+            error_msg = str(e).replace(self.api_key, "HIDDEN_API_KEY")
+            raise RuntimeError(f"Gemini TTS request failed: {error_msg}")
+        except Exception as e:
+            raise RuntimeError(f"Gemini TTS processing failed: {e}")
+
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
 
 # Convenience function
 def generate_tts_audio(

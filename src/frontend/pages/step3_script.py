@@ -411,16 +411,66 @@ def render():
     
     st.markdown("---")
     
-    # ===== STEP C: VOICE GENERATION (AI Studio Helper) =====
+    # ===== STEP C: VOICE GENERATION (Auto & Manual) =====
     st.subheader("🎙️ C. สร้างเสียงพากย์")
-    st.caption("เมื่อบทพร้อมแล้ว → Copy ข้อมูลด้านล่างไปใช้กับ Google AI Studio")
     
-    # Auto-generate style from voice personality (no separate button needed)
+    # Auto-generate style from voice personality
     default_style = f"Tone: {personality_options.get(selected_personality, 'Warm & Friendly')}. Read in a natural, conversational way."
     if not project.style_instructions:
         project.style_instructions = default_style
+        
+    vo_text = extract_voiceover_text(script_text)
     
-    with st.expander("📋 ข้อมูลสำหรับ AI Studio", expanded=False):
+    # --- Auto Voice Generation (Gemini TTS) ---
+    st.markdown("**✨ สร้างเปรียบเสมือน AI Studio ภายในแอป (Gemini 2.5 Pro TTS)**")
+    
+    col_voice, col_gen = st.columns([2, 1])
+    with col_voice:
+        try:
+            from src.core.tts_generator import GeminiTTSGenerator
+            voices = GeminiTTSGenerator.VOICES
+        except ImportError:
+            voices = ["Aoede", "Kore", "Puck", "Charon", "Zephyr", "Orbit", "Leda", "Fenrir"]
+            
+        selected_voice = st.selectbox(
+            "เลือกเสียงพากย์",
+            options=voices,
+            index=0,
+            help="Aoede และ Kore เป็นเสียงผู้หญิงที่ฟังดูเป็นธรรมชาติ, Puck และ Charon เป็นเสียงผู้ชาย"
+        )
+        
+    can_generate = bool(vo_text)
+        
+    with col_gen:
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        
+        if st.button("🎙️ สร้างเสียงอัตโนมัติ", type="primary", use_container_width=True, disabled=not can_generate):
+            try:
+                from src.core.tts_generator import GeminiTTSGenerator
+                tts_gen = GeminiTTSGenerator()
+                
+                with st.spinner(f"กำลังสร้างเสียง '{selected_voice}' ด้วย Gemini 2.5 Pro TTS..."):
+                    wav_path = tts_gen.generate_speech(text=vo_text, voice=selected_voice)
+                    
+                    import shutil
+                    project_dir = DATA_DIR / project.project_id
+                    project_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    final_path = project_dir / f"audio_gemini_{selected_voice}.wav"
+                    shutil.move(wav_path, str(final_path))
+                    
+                    project.audio_path = str(final_path)
+                    st.session_state.current_project = project
+                    auto_save_project()
+                    
+                    st.success("✅ สร้างเสียงพากย์สำเร็จ!")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"❌ เกิดข้อผิดพลาด: {e}")
+
+    # --- Manual AI Studio Helper ---    
+    with st.expander("📋 สร้างด้วยตนเองผ่านเว็บไซต์ AI Studio (ทางเลือก)", expanded=False):
+        st.caption("เมื่อบทพร้อมแล้ว → Copy ข้อมูลด้านล่างไปใช้กับ Google AI Studio")
         # Style instructions (editable)
         style_box = st.text_area(
             "Style Instructions (ปรับแต่งได้)",
@@ -446,7 +496,6 @@ def render():
         
         # Script preview with copy — ONLY spoken narration (strip stage directions)
         with col_copy_script:
-            vo_text = extract_voiceover_text(script_text)
             st.markdown("**📝 บทพูด (Voiceover):**")
             st.code(vo_text or "(ยังไม่มีบทพูด)", language=None)
             st.download_button(
@@ -467,7 +516,6 @@ def render():
             st.link_button(
                 "🌟 เปิด AI Studio",
                 "https://aistudio.google.com/generate-speech",
-                type="primary",
                 use_container_width=True
             )
         with col_help:

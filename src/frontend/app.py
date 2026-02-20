@@ -23,6 +23,9 @@ from src.config.constants import (
     STEP_DATABASE, STEP_SETTINGS
 )
 
+# Dashboard page constant (not in constants.py yet - use inline string)
+STEP_DASHBOARD = "dashboard"
+
 # Import frontend utilities
 from src.frontend.utils import init_session_state
 from src.frontend.styles import apply_dark_mode, apply_mobile_styles
@@ -153,6 +156,11 @@ def render_sidebar():
         # Management Navigation
         st.subheader("🛠️ จัดการ")
         
+        if st.button("📊 Dashboard", use_container_width=True,
+                    type="primary" if st.session_state.page == STEP_DASHBOARD else "secondary"):
+            st.session_state.page = STEP_DASHBOARD
+            st.rerun()
+
         if st.button("🗃️ Database & Tags", use_container_width=True, 
                     type="primary" if st.session_state.page == STEP_DATABASE else "secondary"):
             st.session_state.page = STEP_DATABASE
@@ -220,6 +228,9 @@ def main():
     elif page == STEP_SETTINGS:    # Settings
         from src.frontend.pages import settings
         settings.render()
+    elif page == STEP_DASHBOARD:   # Dashboard
+        from src.frontend.pages import dashboard
+        dashboard.render()
     else:
         st.warning("⚠️ ไม่พบหน้านี้")
         if st.button("🏠 กลับหน้าแรก", type="primary"):

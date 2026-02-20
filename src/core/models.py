@@ -71,7 +71,8 @@ class Scene(BaseModel):
     # Narration
     narration_text: str
     word_count: int = 0
-    estimated_duration: float = Field(default=0.0, description="seconds, should be ≤8")
+    estimated_duration: float = Field(default=0.0, description="seconds, should be <= 8")
+
     
     # Visual
     veo_prompt: str = ""
@@ -95,6 +96,20 @@ class Scene(BaseModel):
     # Quality scoring (Phase 2)
     quality_score: float = 0.0
     quality_suggestions: list[str] = []
+
+    # Platform variants (Feature 4: Multi-platform)
+    platform_variants: dict = Field(
+        default_factory=dict,
+        description="Platform-specific prompt variants. key=platform, value=adapted prompt"
+    )
+
+    # A/B Testing variants (Feature 7)
+    prompt_variants: list[str] = Field(
+        default_factory=list,
+        description="Alternative prompt versions for A/B testing"
+    )
+    selected_variant: int = 0  # Index into prompt_variants (0 = original veo_prompt)
+
     
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.now)
