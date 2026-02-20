@@ -5,6 +5,7 @@ events {
 }
 
 http {
+    include /etc/nginx/mime.types;
     sendfile on;
     client_max_body_size 250M;
 
