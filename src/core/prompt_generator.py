@@ -830,24 +830,6 @@ Refine this prompt for Maximum Accuracy and Visual Clarity:"""
         except Exception as e:
             logger.warning(f"Refinement failed: {e}")
             return prompt
-        if prompt.startswith("```"):
-            lines = prompt.split("\n")
-            prompt = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
-        
-        # Remove quotes if wrapped
-        prompt = prompt.strip('"\'')
-        
-        # ⚠️ CRITICAL: Remove any Thai text that slipped through
-        # Thai Unicode range: U+0E00 to U+0E7F
-        prompt = re.sub(r'[\u0E00-\u0E7F]+', '', prompt)
-        
-        # Clean up extra spaces/commas from Thai removal
-        prompt = re.sub(r'\s+', ' ', prompt)  # Multiple spaces → single space
-        prompt = re.sub(r',\s*,', ',', prompt)  # Double commas → single
-        prompt = re.sub(r'^\s*,\s*', '', prompt)  # Leading comma
-        prompt = re.sub(r'\s*,\s*$', '', prompt)  # Trailing comma
-        
-        return prompt.strip()
     
     def _strip_dialogue_artifacts(self, prompt: str) -> str:
         """
@@ -1760,15 +1742,19 @@ Reply JSON:
         self,
         scenes: list[Scene],
         character: Optional[str] = None,
-        project_context: dict = None
+        project_context: dict = None,
+        force_regenerate: bool = False
     ) -> list[Scene]:
         """
-        Generate prompts for all scenes with continuity context
+        Generate prompts for all scenes with continuity context.
+        Supports resume: scenes that already have veo_prompt + voice_tone are skipped
+        unless force_regenerate=True.
         
         Args:
             scenes: List of Scene objects
             character: Character reference for consistency
             project_context: Dict with visual_theme, directors_note, aspect_ratio, video_type
+            force_regenerate: If True, regenerate ALL scenes even if already done
             
         Returns:
             List of scenes with generated veo_prompt
@@ -1780,7 +1766,7 @@ Reply JSON:
         prompt_style_config = project_context.get("prompt_style_config") if project_context else None
         video_type = project_context.get("video_type", "with_person") if project_context else "with_person"
         
-        # === NEW: Platform & Content Context Injection ===
+        # === Platform & Content Context Injection ===
         platforms = project_context.get("platforms", []) if project_context else []
         topic = project_context.get("topic", "") if project_context else ""
         content_category = project_context.get("content_category", "") if project_context else ""
@@ -1792,7 +1778,6 @@ Reply JSON:
         platform_instructions = self._build_platform_instructions(platforms, video_format)
         content_context = self._build_content_context(topic, content_category, content_goal, target_audience)
         
-        # Enrich director's note with platform and content context
         enriched_note_parts = []
         if note:
             enriched_note_parts.append(note)
@@ -1821,13 +1806,21 @@ Reply JSON:
         
         for i, scene in enumerate(scenes):
             scene_number = i + 1
+            
+            # === RESUME SUPPORT: Skip already-completed scenes ===
+            if not force_regenerate and scene.veo_prompt and scene.voice_tone:
+                logger.info(f"Scene {scene_number}/{total_scenes}: already done — skipping (resume mode)")
+                if scene.veo_prompt:
+                    previous_scene_summary = self._summarize_prompt(scene.veo_prompt)
+                continue
+            
             logger.info(f"Generating prompt for scene {scene_number}/{total_scenes}...")
             
             # Get previous and next narration for story continuity
             previous_narration = scenes[i - 1].narration_text if i > 0 else ""
             next_narration = scenes[i + 1].narration_text if i < total_scenes - 1 else ""
             
-            # Generate with full context
+            # Generate veo_prompt (must be done first — needed by voice_tone)
             scene.veo_prompt = self.generate_prompt(
                 scene=scene,
                 character_override=character,
@@ -1845,8 +1838,130 @@ Reply JSON:
                 script_summary=script_summary
             )
             
-            # Generate Thai voiceover text — gender-adapted
-            # Generate Thai voiceover text — gender-adapted with full context
+            # === PARALLEL: voiceover (no API, instant) + voice_tone (API) run together ===
+            # voiceover_prompt returns narration_text directly (no API call)
+            # voice_tone needs one API call — run in background thread
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future_tone = executor.submit(
+                    self.generate_voice_tone,
+                    scene,
+                    scene_number,
+                    total_scenes,
+                    theme,
+                    scene.veo_prompt,
+                    character or "",
+                    platform_hint
+                )
+                # voiceover is instant (returns narration_text as-is)
+                scene.voiceover_prompt = self.generate_voiceover_prompt(
+                    scene=scene,
+                    scene_number=scene_number,
+                    total_scenes=total_scenes,
+                    visual_theme=theme,
+                    character_reference=character or "",
+                    veo_prompt=scene.veo_prompt,
+                    video_type=video_type,
+                    platform_hint=platform_hint
+                )
+                scene.voice_tone = future_tone.result()
+            
+            # Store summarized prompt for next scene's continuity context
+            if scene.veo_prompt:
+                previous_scene_summary = self._summarize_prompt(scene.veo_prompt)
+        
+        return scenes
+    
+    def generate_single_scene(
+        self,
+        scene: "Scene",
+        scene_index: int,
+        total_scenes: int,
+        character: Optional[str] = None,
+        project_context: dict = None,
+        previous_scene_summary: str = "",
+        previous_narration: str = "",
+        next_narration: str = "",
+    ) -> "Scene":
+        """
+        Generate veo_prompt, voiceover_prompt, and voice_tone for a SINGLE scene.
+        Used by per-prompt mode — generates ONLY this scene and nothing else.
+
+        Args:
+            scene: The Scene object to generate prompts for.
+            scene_index: 0-based index of this scene in the full scene list.
+            total_scenes: Total number of scenes (for context in prompt).
+            character: Character reference string.
+            project_context: Dict with visual_theme, directors_note, aspect_ratio, video_type, etc.
+            previous_scene_summary: Summary of the previous scene's veo_prompt (for continuity).
+            previous_narration: Narration text of previous scene.
+            next_narration: Narration text of next scene.
+
+        Returns:
+            The same scene object with veo_prompt, voiceover_prompt, and voice_tone populated.
+        """
+        ctx = project_context or {}
+        theme = ctx.get("visual_theme", "")
+        note = ctx.get("directors_note", "")
+        ratio = ctx.get("aspect_ratio", "16:9")
+        direction_style = ctx.get("direction_style")
+        prompt_style_config = ctx.get("prompt_style_config")
+        video_type = ctx.get("video_type", "with_person")
+
+        platforms = ctx.get("platforms", [])
+        topic = ctx.get("topic", "")
+        content_category = ctx.get("content_category", "")
+        video_format = ctx.get("video_format", "")
+        content_goal = ctx.get("content_goal", "")
+        target_audience = ctx.get("target_audience", "")
+
+        platform_instructions = self._build_platform_instructions(platforms, video_format)
+        content_context = self._build_content_context(topic, content_category, content_goal, target_audience)
+
+        enriched_note_parts = [p for p in [note, platform_instructions, content_context] if p]
+        enriched_note = "\n\n".join(enriched_note_parts)
+
+        platform_names = []
+        for p in platforms:
+            pdata = self.PLATFORM_STYLE_MAP.get(p)
+            if pdata:
+                platform_names.append(f"{pdata['name']} ({pdata['style']})")
+        platform_hint = ", ".join(platform_names)
+
+        # Script summary is empty for single-scene mode (no full-script context needed)
+        script_summary = ""
+
+        scene_number = scene_index + 1
+
+        # Generate veo_prompt
+        scene.veo_prompt = self.generate_prompt(
+            scene=scene,
+            character_override=character,
+            visual_theme=theme,
+            directors_note=enriched_note,
+            aspect_ratio=ratio,
+            scene_number=scene_number,
+            total_scenes=total_scenes,
+            previous_scene_summary=previous_scene_summary,
+            direction_style_id=direction_style,
+            prompt_style_config=prompt_style_config,
+            video_type=video_type,
+            previous_narration=previous_narration,
+            next_narration=next_narration,
+            script_summary=script_summary,
+        )
+
+        # Parallel: voice_tone (API call) + voiceover (instant)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future_tone = executor.submit(
+                self.generate_voice_tone,
+                scene,
+                scene_number,
+                total_scenes,
+                theme,
+                scene.veo_prompt,
+                character or "",
+                platform_hint,
+            )
             scene.voiceover_prompt = self.generate_voiceover_prompt(
                 scene=scene,
                 scene_number=scene_number,
@@ -1855,34 +1970,24 @@ Reply JSON:
                 character_reference=character or "",
                 veo_prompt=scene.veo_prompt,
                 video_type=video_type,
-                platform_hint=platform_hint
+                platform_hint=platform_hint,
             )
-            
-            # Generate English voice tone direction — COHERENT with video & character
-            scene.voice_tone = self.generate_voice_tone(
-                scene=scene,
-                scene_number=scene_number,
-                total_scenes=total_scenes,
-                visual_theme=theme,
-                veo_prompt=scene.veo_prompt,
-                character_reference=character or "",
-                platform_hint=platform_hint
-            )
-            
-            # Store properly summarized prompt for next iteration
-            if scene.veo_prompt:
-                previous_scene_summary = self._summarize_prompt(scene.veo_prompt)
-        
-        return scenes
-    
+            scene.voice_tone = future_tone.result()
+
+        logger.info(f"generate_single_scene: scene {scene_number}/{total_scenes} done.")
+        return scene
+
     def generate_all_prompts_generator(
         self,
         scenes: list[Scene],
         character: Optional[str] = None,
-        project_context: dict = None
+        project_context: dict = None,
+        force_regenerate: bool = False
     ):
         """
-        Generator version of generate_all_prompts that yields progress
+        Generator version of generate_all_prompts that yields progress.
+        Supports resume: scenes with veo_prompt + voice_tone are yielded immediately
+        unless force_regenerate=True.
         Yields: (current_index, total_scenes, current_scene_object)
         """
         theme = project_context.get("visual_theme", "") if project_context else ""
@@ -1892,7 +1997,7 @@ Reply JSON:
         prompt_style_config = project_context.get("prompt_style_config") if project_context else None
         video_type = project_context.get("video_type", "with_person") if project_context else "with_person"
         
-        # === NEW: Platform & Content Context Injection ===
+        # === Platform & Content Context Injection ===
         platforms = project_context.get("platforms", []) if project_context else []
         topic = project_context.get("topic", "") if project_context else ""
         content_category = project_context.get("content_category", "") if project_context else ""
@@ -1904,7 +2009,6 @@ Reply JSON:
         platform_instructions = self._build_platform_instructions(platforms, video_format)
         content_context = self._build_content_context(topic, content_category, content_goal, target_audience)
         
-        # Enrich director's note with platform and content context
         enriched_note_parts = []
         if note:
             enriched_note_parts.append(note)
@@ -1927,19 +2031,36 @@ Reply JSON:
         total_scenes = len(scenes)
         previous_scene_summary = ""
         
+        # Pre-populate previous_scene_summary from already-done scenes before first new one
+        # so continuity context is correct after resume
+        for s in scenes:
+            if s.veo_prompt and (not force_regenerate):
+                previous_scene_summary = self._summarize_prompt(s.veo_prompt)
+            else:
+                break
+        
         # Generate script summary for narrative arc awareness
         logger.info(f"Generating script summary for {total_scenes} scenes (video_type={video_type})...")
         script_summary = self._generate_script_summary(scenes)
         
         for i, scene in enumerate(scenes):
             scene_number = i + 1
+            
+            # === RESUME SUPPORT: Skip already-completed scenes ===
+            if not force_regenerate and scene.veo_prompt and scene.voice_tone:
+                logger.info(f"Scene {scene_number}/{total_scenes}: already done — skipping (resume mode)")
+                if scene.veo_prompt:
+                    previous_scene_summary = self._summarize_prompt(scene.veo_prompt)
+                yield scene_number, total_scenes, scene
+                continue
+            
             logger.info(f"Generating prompt for scene {scene_number}/{total_scenes}...")
             
             # Get previous and next narration for story continuity
             previous_narration = scenes[i - 1].narration_text if i > 0 else ""
             next_narration = scenes[i + 1].narration_text if i < total_scenes - 1 else ""
             
-            # Generate with full context
+            # Generate veo_prompt (sequential — needs previous_scene_summary)
             scene.veo_prompt = self.generate_prompt(
                 scene=scene,
                 character_override=character,
@@ -1957,30 +2078,34 @@ Reply JSON:
                 script_summary=script_summary
             )
             
-            # Generate Thai voiceover text — gender-adapted
-            scene.voiceover_prompt = self.generate_voiceover_prompt(
-                scene=scene,
-                scene_number=scene_number,
-                total_scenes=total_scenes,
-                visual_theme=theme,
-                character_reference=character or "",
-                veo_prompt=scene.veo_prompt,
-                video_type=video_type,
-                platform_hint=platform_hint
-            )
+            # === PARALLEL: voice_tone API call + voiceover (instant) ===
+            # voiceover_prompt returns narration_text directly (no API call needed)
+            # voice_tone requires one API call — fire in background thread
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future_tone = executor.submit(
+                    self.generate_voice_tone,
+                    scene,
+                    scene_number,
+                    total_scenes,
+                    theme,
+                    scene.veo_prompt,
+                    character or "",
+                    platform_hint
+                )
+                # voiceover is instant (returns narration_text as-is) — run on main thread
+                scene.voiceover_prompt = self.generate_voiceover_prompt(
+                    scene=scene,
+                    scene_number=scene_number,
+                    total_scenes=total_scenes,
+                    visual_theme=theme,
+                    character_reference=character or "",
+                    veo_prompt=scene.veo_prompt,
+                    video_type=video_type,
+                    platform_hint=platform_hint
+                )
+                scene.voice_tone = future_tone.result()
             
-            # Generate English voice tone direction — COHERENT with video & character
-            scene.voice_tone = self.generate_voice_tone(
-                scene=scene,
-                scene_number=scene_number,
-                total_scenes=total_scenes,
-                visual_theme=theme,
-                veo_prompt=scene.veo_prompt,
-                character_reference=character or "",
-                platform_hint=platform_hint
-            )
-            
-            # Store properly summarized prompt for next iteration
+            # Store summarized prompt for next scene's continuity context
             if scene.veo_prompt:
                 previous_scene_summary = self._summarize_prompt(scene.veo_prompt)
             

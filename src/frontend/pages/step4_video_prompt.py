@@ -9,7 +9,7 @@ import os
 from src.core.models import Scene
 from src.shared.project_manager import save_project
 from src.frontend.utils import show_back_button, auto_save_project, copy_to_clipboard, export_all_prompts, show_step_guard
-from src.config.constants import STEP_SCRIPT, STEP_UPLOAD, VIDEO_TYPES
+from src.config.constants import STEP_SCRIPT, STEP_UPLOAD, VIDEO_TYPES, VIDEO_STYLES
 from src.core.llm_config import LLM_PROVIDERS
 
 # Try import prompt generator
@@ -93,6 +93,57 @@ def render():
         st.info("📦 วีดีโอแบบไม่มีคน - เน้น Product/B-roll shots")
     else:
         st.info("🔀 Mixed - ผสมผสานทั้งสองแบบ")
+    
+    st.markdown("---")
+    
+    # ===== VIDEO STYLE SELECTION =====
+    st.subheader("🎨 สไตล์วีดีโอ")
+    st.caption("เลือกสไตล์ภาพที่ต้องการ — AI จะสร้าง prompt ตามสไตล์นี้")
+    
+    # Style descriptions for AI prompt generation (English)
+    VIDEO_STYLE_DESCRIPTIONS = {
+        "": "",
+        "minimal_clean": "Minimal and clean aesthetic. White or neutral backgrounds, simple compositions, lots of negative space, soft shadows, modern and uncluttered look.",
+        "nature_organic": "Natural and organic feel. Lush greenery, earth tones, warm sunlight filtering through leaves, wooden textures, outdoor settings with natural elements.",
+        "cinematic_dark": "Cinematic dark mood. Deep shadows, rim lighting, dramatic contrast, moody atmosphere, dark backgrounds with selective lighting, film noir influence.",
+        "warm_cozy": "Warm and cozy atmosphere. Soft golden lighting, warm color temperature, comfortable indoor settings, candles or warm lamps, intimate close-ups.",
+        "neon_urban": "Neon urban nightscape. Vibrant neon lights, rain-slicked streets, cyberpunk influence, blue and pink color palette, city at night, reflective surfaces.",
+        "pastel_soft": "Soft pastel aesthetic. Light pink, mint, lavender colors, dreamy soft focus, Korean-style flat lay, gentle gradients, airy and delicate mood.",
+        "luxury_premium": "Luxury premium look. Gold accents, marble textures, rich deep colors, elegant lighting, high-end product photography style, sophisticated composition.",
+        "vintage_retro": "Vintage retro style. Film grain, faded colors, warm sepia tones, 70s-80s aesthetic, analog photography look, nostalgic atmosphere.",
+        "bright_energetic": "Bright and energetic. Vivid saturated colors, dynamic angles, high-key lighting, bold compositions, pop art influence, youthful energy.",
+        "monochrome_bw": "Monochrome black and white. High contrast, dramatic shadows, artistic composition, classic photography, timeless and elegant, strong silhouettes.",
+        "tropical_thai": "Tropical Thai aesthetic. Vibrant tropical colors, Thai cultural elements, ornate patterns, golden temple tones, lush tropical vegetation, warm exotic atmosphere.",
+        "futuristic_tech": "Futuristic and high-tech. Holographic effects, clean lines, blue-white color scheme, digital interfaces, sleek surfaces, sci-fi atmosphere, glass and metal.",
+    }
+    
+    style_options = {vs[0]: vs[1] for vs in VIDEO_STYLES}
+    
+    def _on_style_change():
+        project.visual_theme = VIDEO_STYLE_DESCRIPTIONS.get(st.session_state.step4_video_style, "")
+        st.session_state.current_project = project
+        auto_save_project()
+    
+    # Find current index by matching description
+    current_style_idx = 0
+    for i, (key, _) in enumerate(VIDEO_STYLES):
+        if VIDEO_STYLE_DESCRIPTIONS.get(key, "") == project.visual_theme:
+            current_style_idx = i
+            break
+    
+    selected_style = st.selectbox(
+        "เลือกสไตล์ภาพ",
+        options=list(style_options.keys()),
+        format_func=lambda x: style_options.get(x, x),
+        index=current_style_idx,
+        key="step4_video_style",
+        on_change=_on_style_change
+    )
+    project.visual_theme = VIDEO_STYLE_DESCRIPTIONS.get(selected_style, "")
+    
+    # Show preview of selected style
+    if selected_style:
+        st.info(f"🎯 AI จะสร้าง prompt ตามสไตล์: **{VIDEO_STYLE_DESCRIPTIONS[selected_style][:80]}...**")
     
     st.markdown("---")
     
@@ -191,6 +242,21 @@ def render():
         
         enable_qa = st.checkbox("🔍 QA Review (AI ตรวจสอบ)", value=False)
         
+        # Resume / Force-regenerate toggle
+        force_regen = st.checkbox(
+            "🔄 สร้างใหม่ทั้งหมด",
+            value=False,
+            key="step4_force_regen",
+            help="ปิด = Resume ต่อจากฉากที่ค้าง | เปิด = สร้างใหม่ทั้งหมดตั้งแต่ต้น"
+        )
+        
+        # Show resume status
+        if project.scenes:
+            done_count = sum(1 for s in project.scenes if s.veo_prompt and s.voice_tone)
+            total_count_info = len(project.scenes)
+            if done_count > 0 and done_count < total_count_info and not force_regen:
+                st.info(f"⏩ Resume: {done_count}/{total_count_info} ฉากสำเร็จแล้ว")
+        
         # ===== LLM PROVIDER SELECTOR =====
         st.markdown("---")
         st.markdown("**🤖 AI Model**")
@@ -235,91 +301,187 @@ def render():
             if not provider_obj.is_available:
                 st.warning(f"⚠️ ต้องตั้งค่า `{provider_obj.env_key}` ใน .env")
     
+    # ===== HELPER: Build project context dict =====
+    def _build_project_context():
+        return {
+            "visual_theme": project.visual_theme,
+            "directors_note": project.directors_note,
+            "aspect_ratio": project.aspect_ratio,
+            "video_type": selected_video_type,
+            "prompt_style_config": project.prompt_style_config,
+            "platforms": getattr(project, 'platforms', []),
+            "topic": project.topic or project.content_description or "",
+            "content_category": getattr(project, 'content_category', ''),
+            "video_format": getattr(project, 'video_format', ''),
+            "content_goal": getattr(project, 'content_goal', ''),
+            "target_audience": getattr(project, 'target_audience', ''),
+        }
+    
+    # ===== HELPER: Create scenes from audio segments =====
+    def _create_scenes_from_segments():
+        scenes = []
+        for seg in project.audio_segments:
+            scene = Scene(
+                order=seg.order,
+                start_time=seg.start_time,
+                end_time=seg.end_time,
+                narration_text=seg.text_content,
+                visual_style=project.default_style,
+                subject_description=project.character_reference if selected_video_type == "with_person" else "",
+                audio_synced=True
+            )
+            scene.estimated_duration = seg.duration
+            scenes.append(scene)
+        return scenes
+    
+    # Determine mode
+    is_per_prompt_mode = gen_mode == "📝 สร้างทีละ Prompt"
+    
     # Generate button
     if project.audio_segments:
-        if st.button("🎬 สร้าง Veo Prompts", type="primary", use_container_width=True):
-            if not PROMPT_GEN_AVAILABLE:
-                st.error("❌ Prompt Generator ไม่พร้อมใช้งาน")
-            elif provider_obj and not provider_obj.is_available:
-                st.error(f"❌ {provider_obj.name} ยังไม่มี API Key — กรุณาตั้งค่า `{provider_obj.env_key}` ใน .env")
+        if is_per_prompt_mode:
+            # === PER-PROMPT MODE: Generate ONE scene at a time ===
+            
+            # Auto-prepare scenes if they don't exist
+            if not project.scenes or len(project.scenes) != len(project.audio_segments):
+                project.scenes = _create_scenes_from_segments()
+                st.session_state.current_project = project
+                auto_save_project()
+            
+            # Find next ungenerated scene
+            next_scene_idx = None
+            for i, s in enumerate(project.scenes):
+                if not s.veo_prompt:
+                    next_scene_idx = i
+                    break
+            
+            generated_count = sum(1 for s in project.scenes if s.veo_prompt)
+            total_count = len(project.scenes)
+            
+            if next_scene_idx is not None:
+                next_scene = project.scenes[next_scene_idx]
+                st.info(f"📝 สร้างทีละ Prompt — สร้างแล้ว **{generated_count}/{total_count}** ฉาก")
+                
+                # Show preview of next scene to generate
+                st.caption(f"🎯 ฉากถัดไป: **ฉาก {next_scene.order}** — {next_scene.narration_text[:60]}...")
+                
+                if st.button(f"✨ สร้าง Prompt ฉาก {next_scene.order}", type="primary", use_container_width=True):
+                    if provider_obj and not provider_obj.is_available:
+                        st.error(f"❌ {provider_obj.name} ยังไม่มี API Key — กรุณาตั้งค่า `{provider_obj.env_key}` ใน .env")
+                    else:
+                        try:
+                            prov_name = provider_obj.name if provider_obj else 'AI'
+                            with st.spinner(f"🔄 กำลังสร้าง Prompt ฉาก {next_scene.order} ด้วย {prov_name}..."):
+                                from src.core.prompt_generator import VeoPromptGenerator
+                                prompt_gen = VeoPromptGenerator(
+                                    character_reference=project.character_reference,
+                                    enable_qa=enable_qa,
+                                    provider=selected_provider,
+                                    model=selected_model,
+                                )
+                                project_context = _build_project_context()
+
+                                # Build continuity context from previous scene (if any)
+                                prev_summary = ""
+                                prev_narration = ""
+                                nxt_narration = ""
+                                if next_scene_idx > 0:
+                                    prev = project.scenes[next_scene_idx - 1]
+                                    if prev.veo_prompt:
+                                        prev_summary = prev.veo_prompt[:250]
+                                    prev_narration = prev.narration_text
+                                if next_scene_idx < len(project.scenes) - 1:
+                                    nxt_narration = project.scenes[next_scene_idx + 1].narration_text
+
+                                # Generate ONLY this single scene — uses dedicated method, nothing else touched
+                                prompt_gen.generate_single_scene(
+                                    scene=next_scene,
+                                    scene_index=next_scene_idx,
+                                    total_scenes=len(project.scenes),
+                                    character=project.character_reference,
+                                    project_context=project_context,
+                                    previous_scene_summary=prev_summary,
+                                    previous_narration=prev_narration,
+                                    next_narration=nxt_narration,
+                                )
+
+                                st.session_state.current_project = project
+                                auto_save_project()
+                                st.success(f"✅ สร้างฉาก {next_scene.order} สำเร็จ! ({generated_count + 1}/{total_count})")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ สร้าง Prompt ไม่สำเร็จ: {e}")
+                            st.info("💡 ลองตรวจสอบ API Key หรือลองเปลี่ยน Provider")
             else:
-                try:
-                    prov_name = provider_obj.name if provider_obj else 'AI'
-                    with st.spinner(f"🔄 กำลังสร้าง Prompts ด้วย {prov_name}..."):
-                        from src.core.prompt_generator import VeoPromptGenerator
-                        prompt_gen = VeoPromptGenerator(
-                            character_reference=project.character_reference,
-                            enable_qa=enable_qa,
-                            provider=selected_provider,
-                            model=selected_model,
-                        )
-                        
-                        # Create scenes from audio segments
-                        scenes = []
-                        for seg in project.audio_segments:
-                            scene = Scene(
-                                order=seg.order,
-                                start_time=seg.start_time,
-                                end_time=seg.end_time,
-                                narration_text=seg.text_content,
-                                visual_style=project.default_style,
-                                subject_description=project.character_reference if selected_video_type == "with_person" else "",
-                                audio_synced=True
+                st.success(f"🎉 สร้างครบทั้ง {total_count} ฉากแล้ว!")
+        else:
+            # === ALL-AT-ONCE MODE ===
+            if st.button("🎬 สร้าง Veo Prompts ทั้งหมด", type="primary", use_container_width=True):
+                if not PROMPT_GEN_AVAILABLE:
+                    st.error("❌ Prompt Generator ไม่พร้อมใช้งาน")
+                elif provider_obj and not provider_obj.is_available:
+                    st.error(f"❌ {provider_obj.name} ยังไม่มี API Key — กรุณาตั้งค่า `{provider_obj.env_key}` ใน .env")
+                else:
+                    try:
+                        prov_name = provider_obj.name if provider_obj else 'AI'
+                        with st.spinner(f"🔄 กำลังสร้าง Prompts ด้วย {prov_name}..."):
+                            from src.core.prompt_generator import VeoPromptGenerator
+                            prompt_gen = VeoPromptGenerator(
+                                character_reference=project.character_reference,
+                                enable_qa=enable_qa,
+                                provider=selected_provider,
+                                model=selected_model,
                             )
-                            scene.estimated_duration = seg.duration
-                            scenes.append(scene)
-                        
-                        # Project context for prompt generation (ENRICHED)
-                        project_context = {
-                            "visual_theme": project.visual_theme,
-                            "directors_note": project.directors_note,
-                            "aspect_ratio": project.aspect_ratio,
-                            "video_type": selected_video_type,
-                            "prompt_style_config": project.prompt_style_config,
-                            # Platform & Content Context (NEW)
-                            "platforms": getattr(project, 'platforms', []),
-                            "topic": project.topic or project.content_description or "",
-                            "content_category": getattr(project, 'content_category', ''),
-                            "video_format": getattr(project, 'video_format', ''),
-                            "content_goal": getattr(project, 'content_goal', ''),
-                            "target_audience": getattr(project, 'target_audience', ''),
-                        }
-                        
-                        # Progress tracking
-                        progress_bar = st.progress(0.0)
-                        status_text = st.empty()
-                        
-                        generated_scenes = []
-                        
-                        # Use generator for progress updates
-                        generator = prompt_gen.generate_all_prompts_generator(
-                            scenes,
-                            project.character_reference,
-                            project_context
-                        )
-                        
-                        for idx, total, scene in generator:
-                            percentage = idx / total
-                            progress_bar.progress(min(percentage, 1.0))
-                            status_text.text(f"⏳ กำลังสร้างฉากที่ {idx}/{total} ({project_context.get('video_type', '')})...")
-                            generated_scenes.append(scene)
-                        
-                        # Clear progress indicators
-                        status_text.empty()
-                        progress_bar.empty()
-                        
-                        scenes = generated_scenes
-                        
-                        project.scenes = scenes
-                        st.session_state.current_project = project
-                        auto_save_project()
-                        
-                        st.success(f"✅ สร้างสำเร็จ {len(scenes)} Prompts! (ใช้ {prompt_gen.provider_name}/{prompt_gen.active_model})")
-                        st.rerun()
-                        
-                except Exception as e:
-                    st.error(f"❌ สร้าง Prompt ไม่สำเร็จ: {e}")
-                    st.info("💡 ลองตรวจสอบ: 1) มีบทพูดจาก Step 3 2) API Key ถูกต้อง 3) ลองเปลี่ยน Provider 4) ลองกดใหม่อีกครั้ง")
+                            
+                            scenes = _create_scenes_from_segments()
+                            
+                            # Merge existing prompts into new scene list if resuming
+                            if not force_regen and project.scenes:
+                                scene_map = {s.order: s for s in project.scenes}
+                                for s in scenes:
+                                    existing = scene_map.get(s.order)
+                                    if existing:
+                                        s.veo_prompt = existing.veo_prompt
+                                        s.voiceover_prompt = existing.voiceover_prompt
+                                        s.voice_tone = existing.voice_tone
+                                        s.quality_score = existing.quality_score
+                                        s.quality_suggestions = existing.quality_suggestions
+                                        s.video_generated = existing.video_generated
+                            
+                            project_context = _build_project_context()
+                            
+                            # Progress tracking
+                            progress_bar = st.progress(0.0)
+                            status_text = st.empty()
+                            
+                            generated_scenes = []
+                            
+                            generator = prompt_gen.generate_all_prompts_generator(
+                                scenes,
+                                project.character_reference,
+                                project_context,
+                                force_regenerate=force_regen
+                            )
+                            
+                            for idx, total, scene in generator:
+                                percentage = idx / total
+                                progress_bar.progress(min(percentage, 1.0))
+                                status_text.text(f"⏳ กำลังสร้างฉากที่ {idx}/{total} ({project_context.get('video_type', '')})...")
+                                generated_scenes.append(scene)
+                            
+                            status_text.empty()
+                            progress_bar.empty()
+                            
+                            project.scenes = generated_scenes
+                            st.session_state.current_project = project
+                            auto_save_project()
+                            
+                            st.success(f"✅ สร้างสำเร็จ {len(generated_scenes)} Prompts! (ใช้ {prompt_gen.provider_name}/{prompt_gen.active_model})")
+                            st.rerun()
+                            
+                    except Exception as e:
+                        st.error(f"❌ สร้าง Prompt ไม่สำเร็จ: {e}")
+                        st.info("💡 ลองตรวจสอบ: 1) มีบทพูดจาก Step 3 2) API Key ถูกต้อง 3) ลองเปลี่ยน Provider 4) ลองกดใหม่อีกครั้ง")
     
     st.markdown("---")
     
@@ -389,6 +551,63 @@ def render():
                         value=scene.video_generated,
                         key=f"gen_{scene.scene_id}"
                     )
+                    
+                    # Per-prompt mode: individual generate button
+                    if is_per_prompt_mode:
+                        st.markdown("---")
+                        has_prompt = bool(scene.veo_prompt)
+                        btn_label = "🔄 สร้างใหม่" if has_prompt else "✨ สร้าง Prompt"
+                        btn_type = "secondary" if has_prompt else "primary"
+                        
+                        if st.button(btn_label, key=f"gen_single_{scene.scene_id}", type=btn_type, use_container_width=True):
+                            if provider_obj and not provider_obj.is_available:
+                                st.error(f"❌ ไม่มี API Key")
+                            else:
+                                try:
+                                    with st.spinner(f"🔄 สร้าง Prompt ฉาก {scene.order}..."):
+                                        from src.core.prompt_generator import VeoPromptGenerator
+                                        prompt_gen = VeoPromptGenerator(
+                                            character_reference=project.character_reference,
+                                            enable_qa=enable_qa,
+                                            provider=selected_provider,
+                                            model=selected_model,
+                                        )
+                                        project_context = _build_project_context()
+
+                                        # Get scene index for continuity context
+                                        scene_idx = next((i for i, s in enumerate(project.scenes) if s.scene_id == scene.scene_id), 0)
+                                        total_scenes = len(project.scenes)
+
+                                        # Build context from neighboring scenes
+                                        prev_summary = ""
+                                        prev_narration = ""
+                                        nxt_narration = ""
+                                        if scene_idx > 0:
+                                            prev_scene = project.scenes[scene_idx - 1]
+                                            if prev_scene.veo_prompt:
+                                                prev_summary = prev_scene.veo_prompt[:250]
+                                            prev_narration = prev_scene.narration_text
+                                        if scene_idx < total_scenes - 1:
+                                            nxt_narration = project.scenes[scene_idx + 1].narration_text
+
+                                        # Generate ONLY this single scene — uses dedicated method, nothing else touched
+                                        prompt_gen.generate_single_scene(
+                                            scene=scene,
+                                            scene_index=scene_idx,
+                                            total_scenes=total_scenes,
+                                            character=project.character_reference,
+                                            project_context=project_context,
+                                            previous_scene_summary=prev_summary,
+                                            previous_narration=prev_narration,
+                                            next_narration=nxt_narration,
+                                        )
+
+                                        st.session_state.current_project = project
+                                        auto_save_project()
+                                        st.success(f"✅ สร้างฉาก {scene.order} สำเร็จ!")
+                                        st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ ไม่สำเร็จ: {e}")
                 
                 with col_main:
                     # 4 Tabs for the 4 prompt sections
