@@ -55,49 +55,51 @@ spec:
             periodSeconds: 30
 
           env:
-            # Injected from Secret Manager
+            # === Secrets from Secret Manager (individual secrets) ===
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: strategy-engine-secrets
-                  key: openai_api_key
+                  name: strategy-engine-openai-api-key
+                  key: latest
             - name: DEEPSEEK_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: strategy-engine-secrets
-                  key: deepseek_api_key
+                  name: strategy-engine-deepseek-api-key
+                  key: latest
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: strategy-engine-secrets
-                  key: database_url
-            - name: DATAFORSEO_LOGIN
-              valueFrom:
-                secretKeyRef:
-                  name: strategy-engine-secrets
-                  key: dataforseo_login
-            - name: DATAFORSEO_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: strategy-engine-secrets
-                  key: dataforseo_password
+                  name: strategy-engine-database-url
+                  key: latest
             - name: PRODUCTION_WEBHOOK_URL
               valueFrom:
                 secretKeyRef:
-                  name: strategy-engine-secrets
-                  key: production_webhook_url
+                  name: strategy-engine-production-webhook-url
+                  key: latest
             - name: PRODUCTION_WEBHOOK_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: strategy-engine-secrets
-                  key: production_webhook_token
+                  name: strategy-engine-production-webhook-token
+                  key: latest
             - name: QDRANT_URL
               valueFrom:
                 secretKeyRef:
-                  name: strategy-engine-secrets
-                  key: qdrant_url
-            # Non-sensitive env vars
+                  name: strategy-engine-qdrant-url
+                  key: latest
+            # Optional — omit if not using DataForSEO
+            # - name: DATAFORSEO_LOGIN
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: strategy-engine-dataforseo-login
+            #       key: latest
+            # - name: DATAFORSEO_PASSWORD
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: strategy-engine-dataforseo-password
+            #       key: latest
+            # === Non-sensitive env vars ===
             - name: DEBUG
               value: "false"
             - name: CORS_ORIGINS
               value: '["https://strategy-ui-xxxx.run.app"]'
+
