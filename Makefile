@@ -1,4 +1,6 @@
-.PHONY: help dev api install clean test
+.PHONY: help dev api install clean test \
+        se-up se-down se-api se-ui se-test se-logs se-restart \
+        gcp-setup
 
 VENV = .venv/bin
 PYTHON = $(VENV)/python
@@ -8,28 +10,62 @@ help: ## Show this help message
 	@echo 'Usage: make [target]'
 	@echo ''
 	@echo 'Available targets:'
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-install: ## Install dependencies
+# ── vdo-content ───────────────────────────────────────────────────────────────
+
+install: ## Install vdo-content dependencies
 	$(PIP) install -r requirements.txt
 
-dev: ## Run Streamlit dev server (accessible from external networks)
+dev: ## Run Streamlit dev server
 	$(VENV)/streamlit run app.py --server.address=0.0.0.0 --server.port=8501
 
-api: ## Run FastAPI backend
-	$(VENV)/uvicorn api.main:app --reload --port 8000
+api: ## Run vdo-content FastAPI backend (port 8000)
+	$(VENV)/uvicorn src.backend.api.main:app --reload --port 8000
 
-run: ## Run both dev and api (in background)
-	@echo "Starting Streamlit on http://localhost:8501..."
-	@$(VENV)/streamlit run app.py &
-	@echo "Starting API on http://localhost:8000..."
-	@$(VENV)/uvicorn api.main:app --reload --port 8000 &
-	@echo "Both servers are running. Press Ctrl+C to stop."
-
-test: ## Run tests
+test: ## Run vdo-content tests
 	$(VENV)/pytest tests/ -v
 
 clean: ## Clean up temporary files
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
-	find . -type f -name ".pytest_cache" -exec rm -rf {} +
+
+# ── Strategy Engine ───────────────────────────────────────────────────────────
+
+se-up: ## Start ALL services (vdo-content + Strategy Engine)
+	docker compose up -d
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "  vdo-content (Streamlit) → http://localhost:8510"
+	@echo "  vdo-content (API)       → http://localhost:8000"
+	@echo "  Strategy Engine API     → http://localhost:8001"
+	@echo "  Strategy Engine UI      → http://localhost:3000"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+se-down: ## Stop all services
+	docker compose down
+
+se-restart: ## Restart Strategy Engine services only
+	docker compose restart strategy-api strategy-ui
+
+se-api: ## Start only Strategy Engine API (+ its deps)
+	docker compose up -d strategy-postgres strategy-qdrant strategy-api
+	@echo "Strategy Engine API → http://localhost:8001/docs"
+
+se-ui: ## Start only Strategy Engine UI
+	docker compose up -d strategy-ui
+	@echo "Strategy Engine UI → http://localhost:3000"
+
+se-test: ## Run Strategy Engine tests (119 tests)
+	cd strategy-engine/backend && \
+	../../$(VENV)/python -m pytest tests/ -v --tb=short
+
+se-logs: ## Follow Strategy Engine API logs
+	docker compose logs -f strategy-api
+
+# ── GCP Production Setup ─────────────────────────────────────────────────────
+
+gcp-setup: ## Run one-time GCP production setup (Artifact Registry, Cloud Tasks, IAM, Secrets)
+	@echo "🌏 Running GCP production setup..."
+	chmod +x scripts/setup_gcp.sh
+	./scripts/setup_gcp.sh
+

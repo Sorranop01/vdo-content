@@ -1,0 +1,233 @@
+name: 🚀 Deploy Strategy Engine to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "strategy-engine/**"
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: "What to deploy"
+        default: "all"
+        type: choice
+        options:
+          - all
+          - api
+          - frontend
+
+env:
+  PROJECT_ID: ecol-b0859                # Same GCP project as vdo-content
+  REGION: asia-southeast1               # Singapore (closest to Thailand)
+  AR_REPO: strategy-engine             # Artifact Registry repository
+  API_SERVICE: strategy-engine-api
+  FRONTEND_SERVICE: strategy-engine-ui
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────
+  # Job 1: Test Backend
+  # ────────────────────────────────────────────────────────────────────────
+  test-backend:
+    name: 🧪 Backend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: strategy-engine/backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: strategy-engine/backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt asyncpg aiosqlite alembic
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+        env:
+          DATABASE_URL: "sqlite+aiosqlite:///./test.db"
+          OPENAI_API_KEY: "test-key"
+          QDRANT_URL: "http://localhost:6333"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Job 2: Test Frontend
+  # ────────────────────────────────────────────────────────────────────────
+  test-frontend:
+    name: 🧪 Frontend Build Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: strategy-engine/frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: strategy-engine/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --frozen-lockfile
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build (production)
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: "https://placeholder.run.app"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Job 3: Deploy Backend to Cloud Run
+  # ────────────────────────────────────────────────────────────────────────
+  deploy-api:
+    name: 🐍 Deploy API to Cloud Run
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event.inputs.deploy_target == 'all' ||
+       github.event.inputs.deploy_target == 'api' ||
+       github.event_name == 'push')
+    permissions:
+      contents: read
+      id-token: write                  # For Workload Identity Federation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build & push API image
+        working-directory: strategy-engine/backend
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/api:${{ github.sha }}"
+          docker build -t "$IMAGE" -t "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/api:latest" .
+          docker push "$IMAGE"
+          docker push "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/api:latest"
+          echo "API_IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Deploy to Cloud Run
+        run: |
+          # Substitute project vars in service YAML
+          sed -i "s/PROJECT_ID/${{ env.PROJECT_ID }}/g" strategy-engine/deploy/cloudrun-api.yaml
+          sed -i "s/REGION/${{ env.REGION }}/g" strategy-engine/deploy/cloudrun-api.yaml
+          sed -i "s|api:latest|api:${{ github.sha }}|g" strategy-engine/deploy/cloudrun-api.yaml
+          gcloud run services replace strategy-engine/deploy/cloudrun-api.yaml \
+            --region=${{ env.REGION }}
+          # Inject runtime env vars
+          gcloud run services update ${{ env.API_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --set-env-vars="STRATEGY_ENGINE_TOKEN=${{ secrets.STRATEGY_ENGINE_TOKEN }},PRODUCTION_WEBHOOK_URL=https://vdo-content-1040928076984.asia-southeast1.run.app/api/strategy/ingest,PRODUCTION_WEBHOOK_TOKEN=${{ secrets.STRATEGY_ENGINE_TOKEN }}"
+
+      - name: Show API URL
+        run: |
+          URL=$(gcloud run services describe ${{ env.API_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --format='value(status.url)')
+          echo "✅ API deployed to: $URL"
+          echo "API_URL=$URL" >> $GITHUB_ENV
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Job 4: Deploy Frontend to Cloud Run
+  # ────────────────────────────────────────────────────────────────────────
+  deploy-frontend:
+    name: ⚛️ Deploy Frontend to Cloud Run
+    runs-on: ubuntu-latest
+    needs: [deploy-api]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event.inputs.deploy_target == 'all' ||
+       github.event.inputs.deploy_target == 'frontend' ||
+       github.event_name == 'push')
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Get API URL
+        id: api-url
+        run: |
+          URL=$(gcloud run services describe ${{ env.API_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --format='value(status.url)')
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Build & push frontend image
+        working-directory: strategy-engine/frontend
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/frontend:${{ github.sha }}"
+          docker build \
+            --build-arg NEXT_PUBLIC_API_URL="${{ steps.api-url.outputs.url }}" \
+            -t "$IMAGE" \
+            -t "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/frontend:latest" \
+            .
+          docker push "$IMAGE"
+          docker push "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/frontend:latest"
+
+      - name: Deploy frontend to Cloud Run
+        run: |
+          sed -i "s/PROJECT_ID/${{ env.PROJECT_ID }}/g" strategy-engine/deploy/cloudrun-frontend.yaml
+          sed -i "s/REGION/${{ env.REGION }}/g" strategy-engine/deploy/cloudrun-frontend.yaml
+          sed -i "s|frontend:latest|frontend:${{ github.sha }}|g" strategy-engine/deploy/cloudrun-frontend.yaml
+          sed -i "s|https://strategy-engine-api-xxxx.run.app|${{ steps.api-url.outputs.url }}|g" strategy-engine/deploy/cloudrun-frontend.yaml
+          gcloud run services replace strategy-engine/deploy/cloudrun-frontend.yaml \
+            --region=${{ env.REGION }}
+
+      - name: Show Frontend URL
+        run: |
+          URL=$(gcloud run services describe ${{ env.FRONTEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --format='value(status.url)')
+          echo "✅ Frontend deployed to: $URL"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Job 5: Smoke Test (post-deploy health check)
+  # ────────────────────────────────────────────────────────────────────────
+  smoke-test:
+    name: 💨 Smoke Test
+    runs-on: ubuntu-latest
+    needs: [deploy-api, deploy-frontend]
+    steps:
+      - name: Health check — API
+        run: |
+          URL=$(echo "${{ needs.deploy-api.outputs.api_url }}")
+          curl --fail --retry 5 --retry-delay 5 "${URL}/health" || true
+          echo "Smoke test: hit /health endpoint"

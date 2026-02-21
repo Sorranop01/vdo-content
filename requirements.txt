@@ -35,8 +35,11 @@ pytest-asyncio>=0.23.0
 pytest-cov>=4.1.0
 httpx>=0.26.0
 
+# Cloud Tasks (async blueprint queue — production only)
+# Imported with graceful fallback — local dev works without this
+google-cloud-tasks>=2.16.0
 
+# Note: google-cloud-firestore is already included via firebase-admin
 # Note: pydub requires ffmpeg installed on system
 # Ubuntu: apt-get install ffmpeg
 # macOS: brew install ffmpeg
-

@@ -1,0 +1,103 @@
+# ===============================================================
+# Strategy Engine — Cloud Run Service Definition (Backend API)
+# Deploy: gcloud run services replace deploy/cloudrun-api.yaml
+# ===============================================================
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: strategy-engine-api
+  annotations:
+    run.googleapis.com/ingress: all
+
+spec:
+  template:
+    metadata:
+      annotations:
+        # Scale to zero for cost efficiency; max 10 instances
+        run.googleapis.com/min-scale: "0"
+        run.googleapis.com/max-scale: "10"
+        # Cloud SQL proxy for PostgreSQL (Cloud SQL)
+        run.googleapis.com/cloudsql-instances: "PROJECT_ID:REGION:strategy-engine-db"
+        # VPC connector to reach private Qdrant instance (optional)
+        # run.googleapis.com/vpc-access-connector: projects/PROJECT_ID/locations/REGION/connectors/CONNECTOR_NAME
+    spec:
+      serviceAccountName: strategy-engine-sa@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT_ID/strategy-engine/api:latest
+          ports:
+            - containerPort: 8080
+
+          # CPU/Memory (adjust based on load)
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: "0.25"
+              memory: 256Mi
+
+          # Startup probe — wait for Alembic to finish before taking traffic
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            failureThreshold: 10
+            periodSeconds: 5
+
+          # Liveness probe
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+
+          env:
+            # Injected from Secret Manager
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: strategy-engine-secrets
+                  key: openai_api_key
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: strategy-engine-secrets
+                  key: deepseek_api_key
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: strategy-engine-secrets
+                  key: database_url
+            - name: DATAFORSEO_LOGIN
+              valueFrom:
+                secretKeyRef:
+                  name: strategy-engine-secrets
+                  key: dataforseo_login
+            - name: DATAFORSEO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: strategy-engine-secrets
+                  key: dataforseo_password
+            - name: PRODUCTION_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: strategy-engine-secrets
+                  key: production_webhook_url
+            - name: PRODUCTION_WEBHOOK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: strategy-engine-secrets
+                  key: production_webhook_token
+            - name: QDRANT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: strategy-engine-secrets
+                  key: qdrant_url
+            # Non-sensitive env vars
+            - name: DEBUG
+              value: "false"
+            - name: CORS_ORIGINS
+              value: '["https://strategy-ui-xxxx.run.app"]'
