@@ -2,12 +2,15 @@
 Strategy Engine — Pipeline Router
 
 Endpoints for starting, monitoring, and managing agent pipeline runs.
+State is persisted to Firestore (strategy_engine_runs/{run_id}).
+Falls back to in-memory dict if Firestore is unavailable.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 
@@ -25,6 +28,9 @@ from app.services.webhook_service import WebhookService, WebhookDispatchError
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# Thread pool for sync Firestore calls inside async background tasks
+_executor = ThreadPoolExecutor(max_workers=4)
+
 
 # ============================================================
 # Request / Response Models
@@ -41,7 +47,7 @@ class PipelineStartRequest(BaseModel):
     )
     model: str = Field(
         default="deepseek-chat",
-        description="LLM model to use for the pipeline",
+        description="LLM model to use for the pipeline (deepseek-chat or gpt-4o)",
     )
 
 
@@ -74,10 +80,37 @@ class DispatchResponse(BaseModel):
 
 
 # ============================================================
-# In-Memory Store (will be replaced with PostgreSQL in Phase 2)
+# Storage (Firestore + in-memory fallback)
 # ============================================================
 
+# In-memory cache (serves as fallback + fast read layer)
 _pipeline_runs: dict[str, PipelineState] = {}
+
+
+def _get_repo():
+    """Lazy-init RunRepository. Returns None if Firestore unavailable."""
+    try:
+        from app.db.run_repository import RunRepository
+        return RunRepository()
+    except Exception as e:
+        logger.warning(f"[Pipeline] Firestore unavailable — using in-memory only: {e}")
+        return None
+
+
+def _save_to_firestore(state: PipelineState) -> None:
+    """Sync Firestore save. Called via executor from async tasks."""
+    repo = _get_repo()
+    if repo:
+        try:
+            repo.update_from_state(state)
+        except Exception as e:
+            logger.warning(f"[Pipeline] Firestore save failed for {state.run_id}: {e}")
+
+
+async def _async_save(state: PipelineState) -> None:
+    """Save pipeline state to Firestore asynchronously."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_executor, _save_to_firestore, state)
 
 
 # ============================================================
@@ -94,6 +127,7 @@ _STAGE_MAP = {
     PipelineStatus.DISPATCHING: "Stage 5: Dispatching to Production",
     PipelineStatus.COMPLETED: "✅ Completed",
     PipelineStatus.FAILED: "❌ Failed",
+    PipelineStatus.REJECTED: "⛔ Rejected — input did not pass quality check",
 }
 
 
@@ -112,17 +146,51 @@ async def _run_pipeline_background(run_id: str, raw_text: str, model: str):
             model=model,
             run_id=run_id,
         )
+        # Update in-memory cache
         _pipeline_runs[run_id] = result
+        # Persist final state to Firestore
+        await _async_save(result)
         logger.info(f"[BG] Pipeline {run_id} finished: {result.status.value}")
 
     except Exception as e:
         logger.error(f"[BG] Pipeline {run_id} crashed: {e}")
-        # Update store with error state
         state = _pipeline_runs.get(run_id)
         if state:
             state.status = PipelineStatus.FAILED
             state.error = f"Pipeline crashed: {e}"
             state.updated_at = datetime.utcnow()
+            await _async_save(state)
+
+
+# ============================================================
+# Helpers: Load from Firestore if not in memory
+# ============================================================
+
+
+def _load_state(run_id: str) -> Optional[PipelineState]:
+    """Get pipeline state — in-memory first, then Firestore."""
+    if run_id in _pipeline_runs:
+        return _pipeline_runs[run_id]
+
+    # Try loading from Firestore (e.g. after Cloud Run restart)
+    repo = _get_repo()
+    if not repo:
+        return None
+    try:
+        doc = repo.get(run_id)
+        if doc:
+            state = PipelineState(
+                run_id=doc["run_id"],
+                raw_input=doc.get("raw_input", ""),
+                model_used=doc.get("model_used", "deepseek-chat"),
+                status=PipelineStatus(doc.get("status", "failed")),
+                error=doc.get("error"),
+            )
+            _pipeline_runs[run_id] = state  # Cache locally
+            return state
+    except Exception as e:
+        logger.warning(f"[Pipeline] Firestore load failed for {run_id}: {e}")
+    return None
 
 
 # ============================================================
@@ -155,6 +223,15 @@ async def start_pipeline(
     )
     _pipeline_runs[run_id] = state
 
+    # Persist initial state to Firestore
+    repo = _get_repo()
+    if repo:
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(_executor, repo.create, state)
+        except Exception as e:
+            logger.warning(f"[Pipeline] Initial Firestore create failed: {e}")
+
     # Start pipeline in background
     background_tasks.add_task(
         _run_pipeline_background,
@@ -173,7 +250,7 @@ async def start_pipeline(
 @router.get("/{run_id}/status", response_model=PipelineStatusResponse)
 async def get_pipeline_status(run_id: str):
     """Get the current status of a pipeline run."""
-    state = _pipeline_runs.get(run_id)
+    state = _load_state(run_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
 
@@ -195,7 +272,7 @@ async def get_pipeline_blueprint(run_id: str):
     Only available after the pipeline reaches AWAITING_REVIEW or later.
     Returns the full ContentBlueprintPayload.
     """
-    state = _pipeline_runs.get(run_id)
+    state = _load_state(run_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
 
@@ -216,7 +293,7 @@ async def approve_and_dispatch(run_id: str, approved_by: str = "operator"):
     This is the HITL approval step (Stage 4 → Stage 5).
     Triggers the webhook dispatch to the existing vdo-content system.
     """
-    state = _pipeline_runs.get(run_id)
+    state = _load_state(run_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
 
@@ -233,6 +310,7 @@ async def approve_and_dispatch(run_id: str, approved_by: str = "operator"):
     state.status = PipelineStatus.APPROVED
     state.blueprint.approved_by = approved_by
     state.updated_at = datetime.utcnow()
+    await _async_save(state)
 
     # Attempt webhook dispatch
     state.status = PipelineStatus.DISPATCHING
@@ -242,6 +320,7 @@ async def approve_and_dispatch(run_id: str, approved_by: str = "operator"):
         result = await webhook_service.dispatch(state.blueprint)
         state.status = PipelineStatus.COMPLETED
         state.updated_at = datetime.utcnow()
+        await _async_save(state)
         return DispatchResponse(
             run_id=run_id,
             status="completed",
@@ -251,6 +330,7 @@ async def approve_and_dispatch(run_id: str, approved_by: str = "operator"):
         state.status = PipelineStatus.FAILED
         state.error = f"Webhook dispatch failed: {e.message}"
         state.updated_at = datetime.utcnow()
+        await _async_save(state)
         return DispatchResponse(
             run_id=run_id,
             status="dispatch_failed",
@@ -261,6 +341,27 @@ async def approve_and_dispatch(run_id: str, approved_by: str = "operator"):
 @router.get("/", response_model=list[PipelineStatusResponse])
 async def list_pipeline_runs():
     """List all pipeline runs (most recent first)."""
+    # Merge in-memory with Firestore (Firestore is the source of truth)
+    repo = _get_repo()
+    if repo:
+        try:
+            loop = asyncio.get_event_loop()
+            docs = await loop.run_in_executor(_executor, repo.list_recent, 50)
+            return [
+                PipelineStatusResponse(
+                    run_id=d["run_id"],
+                    status=PipelineStatus(d.get("status", "failed")),
+                    created_at=datetime.fromisoformat(d["created_at"]),
+                    updated_at=datetime.fromisoformat(d["updated_at"]) if d.get("updated_at") else None,
+                    current_stage=_STAGE_MAP.get(PipelineStatus(d.get("status", "failed")), "Unknown"),
+                    error=d.get("error"),
+                )
+                for d in docs
+            ]
+        except Exception as e:
+            logger.warning(f"[Pipeline] Firestore list failed, using in-memory: {e}")
+
+    # Fallback to in-memory
     runs = sorted(
         _pipeline_runs.values(),
         key=lambda s: s.created_at,

@@ -1,5 +1,4 @@
 # Strategy Engine — Python Dependencies
-# Phase 0: Foundation
 
 # --- Web Framework ---
 fastapi==0.115.6
@@ -10,22 +9,21 @@ pydantic-settings==2.7.1
 # --- HTTP Client (for webhook dispatch) ---
 httpx==0.28.1
 
-# --- LLM & Agent Orchestration (Phase 1) ---
+# --- LLM & Agent Orchestration ---
 langchain==0.3.14
 langgraph==0.2.62
 langchain-openai==0.3.1
 instructor==1.7.2
 openai==1.59.7
 
-# --- Vector DB (Phase 2) ---
+# --- Firestore (replaces PostgreSQL — uses same Firebase project as vdo-content) ---
+firebase-admin>=6.5.0
+# Note: google-cloud-firestore is already included via firebase-admin
+
+# --- Vector DB (RAG — optional, degrades gracefully if unavailable) ---
 qdrant-client==1.13.2
 
-# --- Database (Phase 2) ---
-sqlalchemy[asyncio]==2.0.36
-asyncpg==0.30.0
-alembic==1.14.1
-
-# --- Embeddings (Phase 2) ---
+# --- Embeddings ---
 tiktoken==0.8.0
 
 # --- Utilities ---

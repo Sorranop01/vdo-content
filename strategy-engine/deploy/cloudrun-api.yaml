@@ -17,9 +17,7 @@ spec:
         # Scale to zero for cost efficiency; max 10 instances
         run.googleapis.com/min-scale: "0"
         run.googleapis.com/max-scale: "10"
-        # Cloud SQL proxy for PostgreSQL (Cloud SQL)
-        run.googleapis.com/cloudsql-instances: "PROJECT_ID:REGION:strategy-engine-db"
-        # VPC connector to reach private Qdrant instance (optional)
+        # Firestore is accessed via Application Default Credentials (no proxy needed)
         # run.googleapis.com/vpc-access-connector: projects/PROJECT_ID/locations/REGION/connectors/CONNECTOR_NAME
     spec:
       serviceAccountName: strategy-engine-sa@PROJECT_ID.iam.gserviceaccount.com
@@ -66,11 +64,8 @@ spec:
                 secretKeyRef:
                   name: strategy-engine-deepseek-api-key
                   key: latest
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: strategy-engine-database-url
-                  key: latest
+            - name: FIREBASE_PROJECT_ID
+              value: "vdo-content-4e158"
             - name: PRODUCTION_WEBHOOK_URL
               valueFrom:
                 secretKeyRef:

@@ -40,11 +40,13 @@ class Settings(BaseSettings):
             return self.openai_model
         return self.deepseek_model  # Will fail with clear error at call time
 
-    # --- Database ---
-    database_url: str = Field(
-        default="postgresql+asyncpg://strategy:strategy@localhost:5432/strategy_engine",
-        alias="DATABASE_URL",
+    # --- Firestore (replaces PostgreSQL — uses same Firebase project as vdo-content) ---
+    firebase_project_id: str = Field(
+        default="vdo-content-4e158",
+        alias="FIREBASE_PROJECT_ID",
     )
+    firestore_runs_collection: str = "strategy_engine_runs"
+
 
     # --- Vector DB (Qdrant) ---
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
