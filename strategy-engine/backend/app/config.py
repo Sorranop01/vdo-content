@@ -48,13 +48,14 @@ class Settings(BaseSettings):
     firestore_runs_collection: str = "strategy_engine_runs"
 
 
-    # --- Vector DB (Qdrant) ---
+    # --- Vector DB (Qdrant — self-hosted on Cloud Run) ---
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
     qdrant_collection: str = "published_content"
+    qdrant_api_key: Optional[str] = Field(default=None, alias="QDRANT_API_KEY")
 
-    # --- Embedding ---
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dimensions: int = 1536
+    # --- Embedding (fastembed — local, no API key needed) ---
+    # Model: BAAI/bge-small-en-v1.5, 384 dimensions
+    # Downloads ~100MB on first run, then cached
 
     # --- SEO External API ---
     dataforseo_login: Optional[str] = Field(default=None, alias="DATAFORSEO_LOGIN")

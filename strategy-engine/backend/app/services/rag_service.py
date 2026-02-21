@@ -1,8 +1,11 @@
 """
-Strategy Engine — RAG Service (Qdrant Vector DB)
+Strategy Engine — RAG Service (Qdrant + fastembed)
 
 Manages embeddings and similarity search for published content.
 Used by Agent 3 for keyword cannibalization detection.
+
+Embeddings: fastembed (BAAI/bge-small-en-v1.5) — local, no API key needed.
+Vector DB: Qdrant (self-hosted on Cloud Run).
 """
 
 from __future__ import annotations
@@ -10,7 +13,6 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from openai import AsyncOpenAI
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance,
@@ -31,7 +33,8 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 COLLECTION_NAME = "published_content"
-EMBEDDING_DIM = 1536  # text-embedding-3-small
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"  # 384 dimensions, local, no API key
+EMBEDDING_DIM = 384  # bge-small-en dimensions
 
 
 class PublishedContent(BaseModel):
@@ -60,6 +63,35 @@ class SimilarContent(BaseModel):
 
 
 # ============================================================
+# Embedding via fastembed (local, no API key)
+# ============================================================
+
+_embed_model = None
+
+
+def _get_embed_model():
+    """Lazy-load fastembed model (downloads ~100MB on first call)."""
+    global _embed_model
+    if _embed_model is None:
+        from fastembed import TextEmbedding
+        _embed_model = TextEmbedding(model_name=EMBEDDING_MODEL)
+        logger.info(f"[RAG] Loaded fastembed model: {EMBEDDING_MODEL}")
+    return _embed_model
+
+
+def _embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed a list of texts using fastembed (synchronous)."""
+    model = _get_embed_model()
+    embeddings = list(model.embed(texts))
+    return [e.tolist() for e in embeddings]
+
+
+def _embed_text(text: str) -> list[float]:
+    """Embed a single text string."""
+    return _embed_texts([text])[0]
+
+
+# ============================================================
 # RAG Service
 # ============================================================
 
@@ -70,21 +102,18 @@ class RAGService:
     def __init__(self):
         self._settings = get_settings()
         self._qdrant: Optional[AsyncQdrantClient] = None
-        self._openai: Optional[AsyncOpenAI] = None
 
     async def _get_qdrant(self) -> AsyncQdrantClient:
         """Lazy-init Qdrant client."""
         if self._qdrant is None:
             url = self._settings.qdrant_url
-            self._qdrant = AsyncQdrantClient(url=url)
+            api_key = self._settings.qdrant_api_key
+            if api_key:
+                self._qdrant = AsyncQdrantClient(url=url, api_key=api_key)
+            else:
+                self._qdrant = AsyncQdrantClient(url=url)
             logger.info(f"[RAG] Connected to Qdrant at {url}")
         return self._qdrant
-
-    async def _get_openai(self) -> AsyncOpenAI:
-        """Lazy-init OpenAI client for embeddings."""
-        if self._openai is None:
-            self._openai = AsyncOpenAI(api_key=self._settings.openai_api_key)
-        return self._openai
 
     # ----------------------------------------------------------
     # Collection Management
@@ -105,22 +134,13 @@ class RAGService:
                     distance=Distance.COSINE,
                 ),
             )
-            logger.info(f"[RAG] Created collection '{COLLECTION_NAME}'")
+            logger.info(f"[RAG] Created collection '{COLLECTION_NAME}' (dim={EMBEDDING_DIM})")
         else:
-            logger.info(f"[RAG] Collection '{COLLECTION_NAME}' already exists")
+            logger.debug(f"[RAG] Collection '{COLLECTION_NAME}' already exists")
 
     # ----------------------------------------------------------
-    # Embedding
+    # Embedding Helpers
     # ----------------------------------------------------------
-
-    async def _embed(self, text: str) -> list[float]:
-        """Generate embedding vector for text."""
-        client = await self._get_openai()
-        response = await client.embeddings.create(
-            model=self._settings.embedding_model,
-            input=text,
-        )
-        return response.data[0].embedding
 
     def _build_embed_text(self, content: PublishedContent) -> str:
         """Build the text to embed from a PublishedContent item."""
@@ -138,17 +158,16 @@ class RAGService:
     async def ingest(self, content: PublishedContent) -> str:
         """
         Embed and store a published content item in Qdrant.
-
-        Args:
-            content: Published content metadata.
-
-        Returns:
-            The content_id of the stored item.
+        Uses fastembed locally — no OpenAI calls needed.
         """
         await self.ensure_collection()
 
         embed_text = self._build_embed_text(content)
-        vector = await self._embed(embed_text)
+
+        # Run fastembed in threadpool to avoid blocking event loop
+        import asyncio
+        loop = asyncio.get_event_loop()
+        vector = await loop.run_in_executor(None, _embed_text, embed_text)
 
         client = await self._get_qdrant()
         await client.upsert(
@@ -190,22 +209,16 @@ class RAGService:
     ) -> list[SimilarContent]:
         """
         Search for published content similar to a query.
-
-        Args:
-            query: Text to search for (usually a keyword or title).
-            limit: Max number of results.
-            threshold: Minimum cosine similarity score.
-            content_type: Optional filter by content type.
-
-        Returns:
-            List of similar content above threshold, sorted by score desc.
+        Uses fastembed for the query embedding — no OpenAI calls.
         """
         await self.ensure_collection()
 
-        vector = await self._embed(query)
+        import asyncio
+        loop = asyncio.get_event_loop()
+        vector = await loop.run_in_executor(None, _embed_text, query)
+
         client = await self._get_qdrant()
 
-        # Build optional filter
         query_filter = None
         if content_type:
             query_filter = Filter(
@@ -247,18 +260,7 @@ class RAGService:
         keyword: str,
         threshold: float = 0.85,
     ) -> list[SimilarContent]:
-        """
-        Check if a keyword cannibalizes existing published content.
-
-        High threshold (0.85) means only very similar content is flagged.
-
-        Args:
-            keyword: The proposed keyword to check.
-            threshold: Cosine similarity threshold.
-
-        Returns:
-            List of potentially cannibalizing content.
-        """
+        """Check if a keyword cannibalizes existing published content."""
         return await self.search_similar(
             query=keyword,
             limit=3,
@@ -300,6 +302,7 @@ class RAGService:
             info = await client.get_collection(COLLECTION_NAME)
             return {
                 "collection": COLLECTION_NAME,
+                "embedding_model": EMBEDDING_MODEL,
                 "points_count": info.points_count,
                 "vectors_count": info.vectors_count,
                 "status": info.status.value,

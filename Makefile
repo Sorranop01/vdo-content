@@ -74,3 +74,8 @@ provision-db: ## Provision Cloud SQL PostgreSQL for strategy-engine (run once)
 	chmod +x scripts/provision_cloudsql.sh
 	./scripts/provision_cloudsql.sh
 
+provision-qdrant: ## Deploy self-hosted Qdrant on Cloud Run for strategy-engine RAG (run once)
+	@echo "🔍 Deploying Qdrant on Cloud Run..."
+	chmod +x scripts/provision_qdrant.sh
+	./scripts/provision_qdrant.sh
+

@@ -20,11 +20,10 @@ openai==1.59.7
 firebase-admin>=6.5.0
 # Note: google-cloud-firestore is already included via firebase-admin
 
-# --- Vector DB (RAG — optional, degrades gracefully if unavailable) ---
-qdrant-client==1.13.2
-
-# --- Embeddings ---
-tiktoken==0.8.0
+# --- Vector DB (Qdrant — for RAG cannibalization check) ---
+qdrant-client[fastembed]==1.13.2
+# fastembed: local embeddings, no API key needed (BAAI/bge-small-en-v1.5, 384 dims)
+# Model downloads ~100MB on first run, cached to /tmp/fastembed_cache
 
 # --- Utilities ---
 python-dotenv==1.0.1
