@@ -66,6 +66,6 @@ se-logs: ## Follow Strategy Engine API logs
 
 gcp-setup: ## Run one-time GCP production setup (Artifact Registry, Cloud Tasks, IAM, Secrets)
 	@echo "🌏 Running GCP production setup..."
-	chmod +x scripts/setup_gcp.sh
-	./scripts/setup_gcp.sh
+	chmod +x scripts/setup_gcp_resources.sh
+	./scripts/setup_gcp_resources.sh
 
