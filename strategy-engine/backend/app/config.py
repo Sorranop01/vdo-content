@@ -27,9 +27,18 @@ class Settings(BaseSettings):
 
     # --- LLM ---
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
-    openai_model: str = "gpt-4o"
+    openai_model: str = "gpt-4o"  # Used only when OPENAI_API_KEY is set
     deepseek_api_key: Optional[str] = Field(default=None, alias="DEEPSEEK_API_KEY")
-    deepseek_model: str = "deepseek-chat"
+    deepseek_model: str = "deepseek-chat"  # Primary model (default provider)
+
+    @property
+    def default_model(self) -> str:
+        """Return the best available model based on configured API keys."""
+        if self.deepseek_api_key:
+            return self.deepseek_model
+        if self.openai_api_key:
+            return self.openai_model
+        return self.deepseek_model  # Will fail with clear error at call time
 
     # --- Database ---
     database_url: str = Field(

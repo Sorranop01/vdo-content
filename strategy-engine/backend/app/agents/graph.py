@@ -70,7 +70,7 @@ async def node_extract_intent(state: GraphState) -> GraphState:
     try:
         result = await extract_intent(
             raw_text=state["raw_input"],
-            model=state.get("model_used", "gpt-4o"),
+            model=state.get("model_used", "deepseek-chat"),
         )
         return {
             "intent": result,
@@ -107,7 +107,7 @@ async def node_formulate_seo(state: GraphState) -> GraphState:
     try:
         result = await formulate_strategy(
             intent=state["intent"],
-            model=state.get("model_used", "gpt-4o"),
+            model=state.get("model_used", "deepseek-chat"),
         )
         return {
             "seo_strategy": result,
@@ -180,7 +180,7 @@ async def node_build_cluster(state: GraphState) -> GraphState:
             intent=state["intent"],
             seo_strategy=state["seo_strategy"],
             existing_content=existing_content,
-            model=state.get("model_used", "gpt-4o"),
+            model=state.get("model_used", "deepseek-chat"),
         )
 
         # Assemble the draft blueprint
@@ -198,7 +198,7 @@ async def node_build_cluster(state: GraphState) -> GraphState:
             cluster_primary_keyword=seo.cluster_primary_keyword,
             estimated_total_search_volume=seo.estimated_total_search_volume,
             pipeline_run_id=run_id,
-            agent_model_used=state.get("model_used", "gpt-4o"),
+            agent_model_used=state.get("model_used", "deepseek-chat"),
             cannibalization_checked=existing_content is not None,
             existing_content_links=cluster.existing_content_links,
         )
@@ -287,7 +287,7 @@ def get_compiled_graph():
 
 async def run_pipeline(
     raw_input: str,
-    model: str = "gpt-4o",
+    model: str = "deepseek-chat",
     run_id: str | None = None,
 ) -> PipelineState:
     """

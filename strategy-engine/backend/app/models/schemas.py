@@ -242,7 +242,7 @@ class ContentBlueprintPayload(BaseModel):
         description="Tracing ID for the agent pipeline run",
     )
     agent_model_used: str = Field(
-        default="gpt-4o",
+        default="deepseek-chat",
         description="LLM model used for generation",
     )
     cannibalization_checked: bool = Field(
@@ -316,7 +316,7 @@ class PipelineState(BaseModel):
     blueprint: Optional[ContentBlueprintPayload] = None
 
     # Metadata
-    model_used: str = Field(default="gpt-4o")
+    model_used: str = Field(default="deepseek-chat")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: Optional[datetime] = None
     error: Optional[str] = None

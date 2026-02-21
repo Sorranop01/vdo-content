@@ -111,7 +111,7 @@ async def build_cluster(
     intent: IntentExtractionOutput,
     seo_strategy: SEOStrategyOutput,
     existing_content: Optional[list[dict]] = None,
-    model: str = "gpt-4o",
+    model: str = "deepseek-chat",
 ) -> ClusterOutput:
     """
     Build a Hub & Spoke topic cluster with internal linking.

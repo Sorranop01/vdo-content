@@ -69,3 +69,8 @@ gcp-setup: ## Run one-time GCP production setup (Artifact Registry, Cloud Tasks,
 	chmod +x scripts/setup_gcp_resources.sh
 	./scripts/setup_gcp_resources.sh
 
+provision-db: ## Provision Cloud SQL PostgreSQL for strategy-engine (run once)
+	@echo "🗄️  Provisioning Cloud SQL for strategy-engine..."
+	chmod +x scripts/provision_cloudsql.sh
+	./scripts/provision_cloudsql.sh
+

@@ -124,7 +124,7 @@ class StrategyCampaign(Base):
     cluster_primary_keyword: Mapped[str | None] = mapped_column(String(256), nullable=True)
     estimated_search_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cannibalization_checked: Mapped[bool] = mapped_column(Boolean, default=False)
-    model_used: Mapped[str] = mapped_column(String(64), nullable=False, default="gpt-4o")
+    model_used: Mapped[str] = mapped_column(String(64), nullable=False, default="deepseek-chat")
 
     # Human approval
     approved_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
@@ -191,7 +191,7 @@ class ExtractedIntent(Base):
     core_pain_points: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     underlying_emotions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     raw_input_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
-    model_used: Mapped[str] = mapped_column(String(64), nullable=False, default="gpt-4o")
+    model_used: Mapped[str] = mapped_column(String(64), nullable=False, default="deepseek-chat")
     extraction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(

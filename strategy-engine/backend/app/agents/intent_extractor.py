@@ -61,7 +61,7 @@ IMPORTANT RULES:
 
 async def extract_intent(
     raw_text: str,
-    model: str = "gpt-4o",
+    model: str = "deepseek-chat",
 ) -> IntentExtractionOutput:
     """
     Extract persona, pain points, and emotions from raw text.

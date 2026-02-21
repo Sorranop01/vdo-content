@@ -40,7 +40,7 @@ class PipelineStartRequest(BaseModel):
         description="Raw research text (comments, notes, competitor data)",
     )
     model: str = Field(
-        default="gpt-4o",
+        default="deepseek-chat",
         description="LLM model to use for the pipeline",
     )
 

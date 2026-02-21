@@ -69,7 +69,7 @@ class CampaignRepository:
         blueprint: ContentBlueprintPayload,
         tenant_id: str,
         run_id: str,
-        model_used: str = "gpt-4o",
+        model_used: str = "deepseek-chat",
         raw_text: Optional[str] = None,
     ) -> StrategyCampaign:
         """

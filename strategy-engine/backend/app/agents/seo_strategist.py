@@ -122,7 +122,7 @@ SEARCH VOLUME:
 
 async def formulate_strategy(
     intent: IntentExtractionOutput,
-    model: str = "gpt-4o",
+    model: str = "deepseek-chat",
 ) -> SEOStrategyOutput:
     """
     Generate SEO/GEO strategy from extracted intent.

@@ -128,7 +128,11 @@ def create_app() -> FastAPI:
         """Check all dependencies: config, Qdrant, LLM key."""
         checks = {
             "api": "ok",
-            "openai_key": "configured" if settings.openai_api_key else "MISSING",
+            "deepseek_key": "configured" if settings.deepseek_api_key else "MISSING",
+            "openai_key": "configured" if settings.openai_api_key else "not_configured",
+            "llm_ready": (
+                "yes" if (settings.deepseek_api_key or settings.openai_api_key) else "NO_KEYS"
+            ),
             "webhook": "configured" if settings.production_webhook_url else "not_configured",
         }
 
@@ -143,7 +147,7 @@ def create_app() -> FastAPI:
             checks["qdrant"] = f"error: {e}"
 
         all_ok = (
-            checks["openai_key"] == "configured"
+            checks["llm_ready"] == "yes"
             and checks.get("qdrant") not in (None, "error")
         )
 
