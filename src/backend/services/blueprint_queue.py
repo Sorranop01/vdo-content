@@ -268,6 +268,96 @@ class BlueprintQueueService:
 
 
 # ============================================================
+# Topic → Project converter
+# ============================================================
+
+async def _create_project_from_topic(
+    topic: dict,
+    cluster_keyword: str,
+    job_id: str,
+    approved_by: str,
+) -> str:
+    """
+    Create a vdo-content Project from a strategy-engine TopicBlueprint.
+
+    Mapping:
+        topic.title             → project.title
+        topic.hook              → used as opening line in description
+        topic.key_points        → project.description (bullet list)
+        topic.seo.primary_keyword → project.topic
+        topic.seo.secondary_keywords → appended to description
+        topic.content_type      → project.video_format + target_duration
+        cluster_keyword         → project.content_goal
+
+    Returns the new project_id.
+    """
+    from src.core.models import Project
+    from src.core.database import db_save_project
+
+    title = topic.get("title", "Untitled Topic")
+    hook = topic.get("hook", "")
+    key_points: list = topic.get("key_points", [])
+    content_type: str = topic.get("content_type", "video")  # video | short | article
+
+    seo: dict = topic.get("seo", {})
+    primary_kw = seo.get("primary_keyword", cluster_keyword)
+    secondary_kws: list = seo.get("secondary_keywords", [])
+    long_tail_kws: list = seo.get("long_tail_keywords", [])
+
+    # Map content_type to video format and duration
+    format_map = {
+        "short": ("shorts", 60),
+        "video": ("standard", 300),
+        "article": ("standard", 180),
+    }
+    video_format, target_duration = format_map.get(content_type, ("standard", 180))
+
+    # Build description from blueprint data
+    desc_lines = []
+    if hook:
+        desc_lines.append(f"🎯 Hook: {hook}")
+    if key_points:
+        kp_text = "\n".join(f"• {kp}" for kp in key_points)
+        desc_lines.append(f"Key Points:\n{kp_text}")
+    if secondary_kws:
+        desc_lines.append(f"SEO Keywords: {', '.join(secondary_kws)}")
+    if long_tail_kws:
+        desc_lines.append(f"Long-tail: {', '.join(long_tail_kws)}")
+    desc_lines.append(f"\n[Auto-created by Strategy Engine | job={job_id} | approved_by={approved_by}]")
+    description = "\n\n".join(desc_lines)
+
+    project = Project(
+        title=title,
+        topic=primary_kw,
+        description=description,
+        content_goal=cluster_keyword,
+        video_format=video_format,
+        target_duration=target_duration,
+        platforms=["youtube"],  # Default; user can update later in Step 2
+        status="step1_project",
+        workflow_step=0,
+    )
+
+    project_data = project.model_dump(mode="json")
+    project_id = await _save_project_async(project_data)
+    return project_id
+
+
+async def _save_project_async(project_data: dict) -> str:
+    """
+    Async-compatible wrapper around the synchronous Firestore save.
+    Runs in a thread pool to avoid blocking the event loop.
+    """
+    import asyncio
+    from functools import partial
+    from src.core.database import db_save_project
+
+    loop = asyncio.get_event_loop()
+    project_id = await loop.run_in_executor(None, partial(db_save_project, project_data))
+    return project_id
+
+
+# ============================================================
 # Blueprint Processor (the actual work)
 # ============================================================
 
@@ -279,13 +369,14 @@ async def process_blueprint(
     """
     Process an approved Content Blueprint from the Strategy Engine.
 
-    This function is called by:
+    For each topic in the blueprint:
+      1. Creates a vdo-content Project in Firestore via _create_project_from_topic()
+      2. (Future) Triggers script generation automatically
+
+    Called by:
     - Cloud Tasks HTTP worker in production
     - FastAPI BackgroundTask in local dev
     - Directly (sync) in tests
-
-    Current implementation: structured log (ready for production pipeline).
-    Replace the TODO section with actual video/script generation logic.
     """
     cluster = blueprint_dict.get("cluster_primary_keyword", "unknown")
     topics = blueprint_dict.get("proposed_topics", [])
@@ -305,16 +396,49 @@ async def process_blueprint(
     )
 
     try:
-        # ── TODO: Wire to actual production pipeline ────────────────────────
-        # 1. Create a Project in vdo-content for each topic
-        # 2. Generate scripts via ScriptGenerator
-        # 3. Generate video prompts via VeoPromptGenerator
-        # 4. Queue for video generation
-        # Example:
-        #   for topic in topics:
-        #       project_id = await create_project_from_topic(topic, cluster)
-        #       await schedule_script_generation(project_id)
-        # ───────────────────────────────────────────────────────────────────
+        # ── Wire to actual production pipeline ────────────────────────────
+        # For each topic in the blueprint:
+        #   1. Create a vdo-content Project in Firestore
+        #   2. Trigger script generation via ScriptGenerator
+        # Video prompt generation happens in Step 4 (user-driven in the UI)
+        # ─────────────────────────────────────────────────────────────────
+
+        created_projects: list[dict] = []
+        failed_topics: list[dict] = []
+
+        for topic in topics:
+            topic_title = topic.get("title", "Untitled")
+            topic_id = topic.get("topic_id", "")
+            try:
+                project_id = await _create_project_from_topic(
+                    topic=topic,
+                    cluster_keyword=cluster,
+                    job_id=job_id,
+                    approved_by=approved_by,
+                )
+                created_projects.append({"topic_title": topic_title, "project_id": project_id})
+                logger.info(
+                    json.dumps({
+                        "severity": "INFO",
+                        "event": "topic_project_created",
+                        "job_id": job_id,
+                        "topic_id": topic_id,
+                        "topic_title": topic_title,
+                        "project_id": project_id,
+                    })
+                )
+            except Exception as topic_err:
+                failed_topics.append({"topic_title": topic_title, "error": str(topic_err)})
+                logger.error(
+                    json.dumps({
+                        "severity": "ERROR",
+                        "event": "topic_project_failed",
+                        "job_id": job_id,
+                        "topic_id": topic_id,
+                        "topic_title": topic_title,
+                        "error": str(topic_err),
+                    })
+                )
 
         logger.info(
             json.dumps({
@@ -322,10 +446,21 @@ async def process_blueprint(
                 "event": "blueprint_processing_complete",
                 "job_id": job_id,
                 "cluster": cluster,
-                "topics_queued": [t.get("title", "") for t in topics],
+                "topics_total": len(topics),
+                "topics_created": len(created_projects),
+                "topics_failed": len(failed_topics),
+                "projects": created_projects,
+                "failures": failed_topics,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
         )
+
+        # Raise if every topic failed (so caller can retry the whole blueprint)
+        if topics and len(failed_topics) == len(topics):
+            raise RuntimeError(
+                f"All {len(topics)} topic(s) failed to create projects. "
+                f"First error: {failed_topics[0]['error']}"
+            )
 
     except Exception as e:
         logger.error(

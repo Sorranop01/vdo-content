@@ -68,6 +68,15 @@ try:
 except ImportError as e:
     logger.info(f"Phase 2 routers not loaded: {e}")
 
+# Mount Strategy Engine integration router
+try:
+    from src.backend.api.routers.strategy import router as strategy_router
+    app.include_router(strategy_router)
+    logger.info("Strategy Engine ingest router loaded")
+except ImportError as e:
+    logger.info(f"Strategy Engine router not loaded: {e}")
+
+
 
 # ============ Schemas ============
 

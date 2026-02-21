@@ -1,0 +1,44 @@
+# Strategy Engine — Git Ignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Python test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Test databases
+*.db
+test.db
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.turbo/
+
+# Env files (keep .env.example, ignore real .env)
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
